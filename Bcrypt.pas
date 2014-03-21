@@ -11,10 +11,17 @@ unit Bcrypt;
 	It uses the Blowfish encryption algorithm, but with an "expensive key setup"
 	modification, contained in the function EksBlowfishSetup.
 
-	Ian Boyd  5/3/2012
-	Public Domain
+	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
+	Subsequently hosted on GitHub (https://github.com/marcelocantos/bcrypt-for-delphi)
 
-	v1.0 - Initial release
+
+
+	Version 1.01     20130612
+			- New: Added HashPassword overload that lets you specify your desired cost
+
+	Version 1.0      20120504
+			- Initial release by Ian Boyd, Public Domain
+
 }
 
 interface
@@ -46,11 +53,13 @@ type
 		class function SelfTestC: Boolean; //unicode strings in UTF8
 		class function SelfTestD: Boolean; //different length passwords
 		class function SelfTestE: Boolean; //salt rng
+		class function SelfTestF: Boolean; //correctbatteryhorsestapler
 
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 	public
 		//Hashes a password into the OpenBSD password-file format (non-standard base-64 encoding). Also validate that BSD style string
 		class function HashPassword(const password: UnicodeString): AnsiString; overload;
+		class function HashPassword(const password: UnicodeString; cost: Integer): AnsiString; overload;
 		class function CheckPassword(const password: UnicodeString; const expectedHashString: AnsiString): Boolean; overload;
 
 		//If you want to handle the cost, salt, and encoding yourself, you can do that.
@@ -70,6 +79,22 @@ uses
 
 const
 	BCRYPT_COST = 10; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
+	{
+		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz
+
+			Cost                       Duration
+			======================  ===========
+			 8 (   256 iterations):     59.8 ms
+			 9 (   512 iterations):    114.6 ms
+			10 ( 1,024 iterations):    234.8 ms <-- current default (BCRYPT_COST=10)
+			11 ( 2,048 iterations):    463.6 ms
+			12 ( 4,096 iterations):    924.3 ms
+			13 ( 8,192 iterations):  1,843.8 ms
+			14 (16,384 iterations):  3,693.2 ms
+			15 (32,768 iterations):  7,364.7 ms
+			16 (65,536 iterations): 14,602.8 ms
+	}
+
 	BCRYPT_SALT_LEN = 16; //bcrypt uses 128-bit (16-byte) salt (This isn't an adjustable parameter, just a name for a constant)
 
 	BsdBase64EncodeTable: array[0..63] of Char =
@@ -125,10 +150,12 @@ type
 
 		//These are just too darn slow (as they should be) for continuous testing
 		procedure SelfTestA_KnownTestVectors;
-		procedure SelfTestC_UnicodeStrings;
 		procedure SelfTestD_VariableLengthPasswords;
+		procedure SpeedTests;
 	published
 		procedure SelfTestB_Base64EncoderDecoder;
+		procedure SelfTestC_UnicodeStrings;
+		procedure SelfTestF_CorrectBattery;
 	end;
 {$ENDIF}
 
@@ -142,8 +169,36 @@ function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; 
 { TBCrypt }
 
 class function TBCrypt.HashPassword(const password: UnicodeString): AnsiString;
+begin
+{	bcrypt was designed for OpenBSD, where hashes in the password file have a
+	certain format.
+
+	The convention used in BSD when generating password hash strings is to format it as:
+			$version$salt$hash
+
+	MD5 hash uses version "1":
+			"$"+"1"+"$"+salt+hash
+
+	bcrypt uses version "2a", but also encodes the cost
+
+			"$"+"2a"+"$"+rounds+"$"+salt+hash
+
+	e.g.
+			$2a$10$Ro0CUfOqk6cXEKf3dyaM7OhSCvnwM9s4wIX9JeLapehKK5YdLxKcm
+			$==$==$======================-------------------------------
+
+	The benfit of this scheme is:
+			- the number of rounds
+			- the salt used
+
+	This means that stored hashes are backwards and forwards compatible with
+	changing the number of rounds
+}
+	Result := TBCrypt.HashPassword(password, BCRYPT_COST);
+end;
+
+class function TBCrypt.HashPassword(const password: UnicodeString; cost: Integer): AnsiString;
 var
-	cost: Integer;
 	salt: TByteDynArray;
 	hash: TByteDynArray;
 begin
@@ -172,7 +227,6 @@ begin
 	changing the number of rounds
 }
 	salt := GenerateSalt();
-	cost := BCRYPT_COST;
 
 	//utf8 := TBCrypt.WideStringToUtf8(password);
 	hash := TBCrypt.HashPassword(password, salt, cost);
@@ -518,7 +572,9 @@ begin
 			SelfTestA and  //known test vectors
 			SelfTestB and  //the base64 encoder/decoder
 			SelfTestC and  //unicode strings
-			SelfTestD;     //different length passwords
+			SelfTestD and  //different length passwords
+			SelfTestE and  //salt RNG
+			SelfTestF;
 end;
 
 class function TBCrypt.FormatPasswordHashForBsd(const cost: Integer; const salt, hash: array of Byte): AnsiString;
@@ -799,6 +855,11 @@ procedure TBCryptTests.SelfTestD_VariableLengthPasswords;
 begin
 	CheckTrue(TBCrypt.SelfTestD);
 end;
+
+procedure TBCryptTests.SelfTestF_CorrectBattery;
+begin
+	CheckTrue(TBcrypt.SelfTestF);
+end;
 {$ENDIF}
 
 class function TBCrypt.GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
@@ -836,6 +897,42 @@ begin
 		raise Exception.Create('BCrypt selftest failed; invalid salt length');
 
 	Result := True;
+end;
+
+class function TBCrypt.SelfTestF: Boolean;
+begin
+	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km');
+end;
+
+procedure TBCryptTests.SpeedTests;
+var
+	freq: Int64;
+
+	procedure TimeIt(Cost: Integer);
+	var
+		t1, t2: Int64;
+		timeus: Real;
+	begin
+		QueryPerformanceCounter(t1);
+		TBCrypt.HashPassword('corrent horse battery staple', Cost);
+		QueryPerformanceCounter(t2);
+
+		timeus := (t2-t1)/freq*1000; //milliseconds
+
+		Status(Format('BCrypt, cost=%d: %.2f ms', [cost, timeus]));
+	end;
+begin
+	QueryPerformanceFrequency(freq);
+
+	TimeIt(8);
+	TimeIt(9);
+	TimeIt(10);
+	TimeIt(11);
+	TimeIt(12);
+	TimeIt(13);
+	TimeIt(14);
+	TimeIt(15);
+	TimeIt(16);
 end;
 
 initialization
