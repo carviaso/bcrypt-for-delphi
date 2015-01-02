@@ -1,6 +1,13 @@
 unit Bcrypt;
 
 {
+	Sample Usage:
+
+		hash := TBCrypt.HashPassword('p@ssword1');     //hash using default cost (10)
+		hash := TBCrypt.HashPassword('p@ssword1', 14); //hash using custom cost factor of 13
+
+	Remarks
+
 	Bcrypt is an algorithm designed for hashing passwords, and only passwords.
 		i.e. It's not a generic, high-speed, generic hashing algorithm.
 			  It's computationally and memory expensive
@@ -8,13 +15,15 @@ unit Bcrypt;
 
 	http://static.usenix.org/events/usenix99/provos/provos.pdf
 
-	It uses the Blowfish encryption algorithm, but with an "expensive key setup"
-	modification, contained in the function EksBlowfishSetup.
+	It uses the Blowfish encryption algorithm, but with an "expensive key setup" modification,
+	contained in the function EksBlowfishSetup.
 
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/marcelocantos/bcrypt-for-delphi)
 
-
+	Version 1.02     20141215
+			- Added support for XE2 string/UnicodeString/AnsiString
+			- Update: Updated code to work in 64-bit environment
 
 	Version 1.01     20130612
 			- New: Added HashPassword overload that lets you specify your desired cost
@@ -22,29 +31,62 @@ unit Bcrypt;
 	Version 1.0      20120504
 			- Initial release by Ian Boyd, Public Domain
 
+
+	bcrypt was designed for OpenBSD, where hashes in the password file have a
+	certain format.
+
+	The convention used in BSD when generating password hash strings is to format it as:
+			$version$salt$hash
+
+	MD5 hash uses version "1":
+			"$"+"1"+"$"+salt+hash
+
+	bcrypt uses version "2a", but also encodes the cost
+
+			"$"+"2a"+"$"+rounds+"$"+salt+hash
+
+	e.g.
+			$2a$10$Ro0CUfOqk6cXEKf3dyaM7OhSCvnwM9s4wIX9JeLapehKK5YdLxKcm
+			$==$==$======================-------------------------------
+
+	The benfit of this scheme is:
+			- the number of rounds
+			- the salt used
+
+	This means that stored hashes are backwards and forwards compatible with
+	changing the number of rounds
 }
 
 interface
 
+//Miniature version of Virtual Treeview's compilers.inc
+{$IFDEF VER130}
+	//Delphi 5
+{$ELSE}
+	{$DEFINE COMPILER_7_UP}
+{$ENDIF}
+
+
+
 uses
-	Blowfish, Types, Math, ComObj;
+	Modernizer, Blowfish,
+	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until Delphi ~7
+	Math, ComObj;
 
 type
-	UnicodeString = WideString;
-
 	TBCrypt = class(TObject)
 	private
-		class function TryParseHashString(const hashString: AnsiString;
-				out version: string; out Cost: Integer; out Salt{, Hash}: TByteDynArray): Boolean;
+		class function TryParseHashString(const hashString: string;
+				out version: string; out Cost: Integer; out Salt: TByteDynArray): Boolean;
 	protected
 		class function EksBlowfishSetup(const Cost: Integer; salt, key: array of Byte): TBlowfishData;
 		class procedure ExpandKey(var state: TBlowfishData; salt, key: array of Byte);
 		class function CryptCore(const Cost: Integer; Key: array of Byte; salt: array of Byte): TByteDynArray;
 
-		class function FormatPasswordHashForBsd(const cost: Integer; const salt: array of Byte; const hash: array of Byte): AnsiString;
+		class function FormatPasswordHashForBsd(const cost: Integer; const salt: array of Byte; const hash: array of Byte): string;
 
-		class function BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): AnsiString;
-		class function BsdBase64Decode(const s: AnsiString): TByteDynArray;
+		class function BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): string;
+		class function BsdBase64Decode(const s: string): TByteDynArray;
 
 		class function WideStringToUtf8(const Source: UnicodeString): AnsiString;
 
@@ -58,9 +100,9 @@ type
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 	public
 		//Hashes a password into the OpenBSD password-file format (non-standard base-64 encoding). Also validate that BSD style string
-		class function HashPassword(const password: UnicodeString): AnsiString; overload;
-		class function HashPassword(const password: UnicodeString; cost: Integer): AnsiString; overload;
-		class function CheckPassword(const password: UnicodeString; const expectedHashString: AnsiString): Boolean; overload;
+		class function HashPassword(const password: UnicodeString): string; overload;
+		class function HashPassword(const password: UnicodeString; cost: Integer): string; overload;
+		class function CheckPassword(const password: UnicodeString; const expectedHashString: string): Boolean; overload;
 
 		//If you want to handle the cost, salt, and encoding yourself, you can do that.
 		class function HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TByteDynArray; overload;
@@ -74,7 +116,7 @@ implementation
 
 uses
 	Windows, SysUtils,
-{$IFDEF UnitTests}TestFramework, {$ENDIF}
+{$IFDEF UnitTests}TestFramework,{$ENDIF}
 	ActiveX;
 
 const
@@ -82,17 +124,17 @@ const
 	{
 		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz
 
-			Cost                       Duration
-			======================  ===========
-			 8 (   256 iterations):     59.8 ms
-			 9 (   512 iterations):    114.6 ms
-			10 ( 1,024 iterations):    234.8 ms <-- current default (BCRYPT_COST=10)
-			11 ( 2,048 iterations):    463.6 ms
-			12 ( 4,096 iterations):    924.3 ms
-			13 ( 8,192 iterations):  1,843.8 ms
-			14 (16,384 iterations):  3,693.2 ms
-			15 (32,768 iterations):  7,364.7 ms
-			16 (65,536 iterations): 14,602.8 ms
+		| Cost | Iterations        |    Duration |
+		|------|-------------------|-------------|
+		|  8   |    256 iterations |     59.8 ms | <-- minimum allowed by BCrypt
+		|  9   |    512 iterations |    114.6 ms |
+		| 10   |  1,024 iterations |    234.8 ms | <-- current default (BCRYPT_COST=10)
+		| 11   |  2,048 iterations |    463.6 ms |
+		| 12   |  4,096 iterations |    924.3 ms |
+		| 13   |  8,192 iterations |  1,843.8 ms |
+		| 14   | 16,384 iterations |  3,693.2 ms |
+		| 15   | 32,768 iterations |  7,364.7 ms |
+		| 16   | 65,536 iterations | 14,602.8 ms |
 	}
 
 	BCRYPT_SALT_LEN = 16; //bcrypt uses 128-bit (16-byte) salt (This isn't an adjustable parameter, just a name for a constant)
@@ -141,7 +183,6 @@ const
 			('~!@#$%^&*()      ~!@#$%^&*()PNBFRD', '$2a$12$WApznUOJfkEGSmYRfnkrPO',    '$2a$12$WApznUOJfkEGSmYRfnkrPOr466oFDCaj4b6HY3EXGvfxm43seyhgC')
 	);
 
-
 {$IFDEF UnitTests}
 type
 	TBCryptTests = class(TTestCase)
@@ -168,67 +209,32 @@ function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; 
 
 { TBCrypt }
 
-class function TBCrypt.HashPassword(const password: UnicodeString): AnsiString;
+class function TBCrypt.HashPassword(const password: UnicodeString): string;
 begin
-{	bcrypt was designed for OpenBSD, where hashes in the password file have a
-	certain format.
+	{
+		Generate a has for the specified password using the default cost (10).
 
-	The convention used in BSD when generating password hash strings is to format it as:
-			$version$salt$hash
-
-	MD5 hash uses version "1":
-			"$"+"1"+"$"+salt+hash
-
-	bcrypt uses version "2a", but also encodes the cost
-
-			"$"+"2a"+"$"+rounds+"$"+salt+hash
-
-	e.g.
-			$2a$10$Ro0CUfOqk6cXEKf3dyaM7OhSCvnwM9s4wIX9JeLapehKK5YdLxKcm
-			$==$==$======================-------------------------------
-
-	The benfit of this scheme is:
-			- the number of rounds
-			- the salt used
-
-	This means that stored hashes are backwards and forwards compatible with
-	changing the number of rounds
-}
+		Sample Usage:
+			hash := TBCrypt.HashPassword('correct horse battery stample');
+	}
 	Result := TBCrypt.HashPassword(password, BCRYPT_COST);
 end;
 
-class function TBCrypt.HashPassword(const password: UnicodeString; cost: Integer): AnsiString;
+class function TBCrypt.HashPassword(const password: UnicodeString; cost: Integer): string;
 var
 	salt: TByteDynArray;
 	hash: TByteDynArray;
 begin
-{	bcrypt was designed for OpenBSD, where hashes in the password file have a
-	certain format.
+	{
+		Generate a hash for the supplied password using the specified cost.
 
-	The convention used in BSD when generating password hash strings is to format it as:
-			$version$salt$hash
+		Sample usage:
 
-	MD5 hash uses version "1":
-			"$"+"1"+"$"+salt+hash
+			hash := TBCrypt.HashPassword('Correct battery Horse staple', 13); //Cost factor 13
+	}
 
-	bcrypt uses version "2a", but also encodes the cost
-
-			"$"+"2a"+"$"+rounds+"$"+salt+hash
-
-	e.g.
-			$2a$10$Ro0CUfOqk6cXEKf3dyaM7OhSCvnwM9s4wIX9JeLapehKK5YdLxKcm
-			$==$==$======================-------------------------------
-
-	The benfit of this scheme is:
-			- the number of rounds
-			- the salt used
-
-	This means that stored hashes are backwards and forwards compatible with
-	changing the number of rounds
-}
 	salt := GenerateSalt();
 
-	//utf8 := TBCrypt.WideStringToUtf8(password);
 	hash := TBCrypt.HashPassword(password, salt, cost);
 
 	Result := FormatPasswordHashForBsd(cost, salt, hash);
@@ -244,9 +250,9 @@ begin
 
 	//Type 4 UUID (RFC 4122) is a handy source of (almost) 128-bits of random data (actually 120 bits)
 	//But the security doesn't come from the salt being secret, it comes from the salt being different each time
-	OleCheck(CoCreateGUID(Type4Uuid));
+	OleCheck(CoCreateGUID(type4Uuid));
 
-	Move(type4Uuid.D1, salt[0], BCRYPT_SALT_LEN); //16 bytes
+	Move(type4Uuid.D1, salt[0], BCRYPT_SALT_LEN); //i.e. move 16 bytes
 
 	Result := salt;
 end;
@@ -257,7 +263,7 @@ var
 	len: Integer;
 	utf8Password: AnsiString;
 begin
-	//pseudo-standard dictates that unicode strings are converted to UTF8 (rather than UTF16, UTF32, UTF16LE, etc)
+	//pseudo-standard dictates that unicode strings are converted to UTF8 (rather than UTF16, UTF32, UTF16LE, ISO-8859-1, Windows-1252, etc)
 	utf8Password := TBCrypt.WideStringToUtf8(password);
 
 	//key is 56 bytes.
@@ -439,20 +445,22 @@ begin
 	Result := CompareMem(@candidateHash[0], @hash[0], len);
 end;
 
-class function TBCrypt.TryParseHashString(const hashString: AnsiString;
-		out version: string; out Cost: Integer; out Salt: TByteDynArray{; out Hash: TByteDynArray}): Boolean;
+class function TBCrypt.TryParseHashString(const hashString: string;
+		out version: string; out Cost: Integer; out Salt: TByteDynArray): Boolean;
 var
-	work: AnsiString;
-	s: AnsiString;
+	work: string;
+	s: string;
 begin
 	Result := False;
 
 	{
 		Pick apart our specially formatted hash string
 
-		$2a$nn$(22 character salt, b64 encoded)(32 character hash, b64 encoded)
+			$2a$nn$(22 character salt, b64 encoded)(32 character hash, b64 encoded)
 
 		We also need to accept version 2, the original version
+
+			$2$nn$(22 character salt, b64 encoded)(32 character hash, b64 encoded)
 	}
 	if Length(hashString) < 28 then
 		Exit;
@@ -485,14 +493,10 @@ begin
 	s := Copy(work, 4, 22);
 	Salt := BsdBase64Decode(s); //salt is always 16 bytes
 
-{	//next 32 is hash
-	s := Copy(work, 26, 32);
-	SetLength(Hash, 24); //hash is always 24 bytes}
-
 	Result := True;
 end;
 
-class function TBCrypt.CheckPassword(const password: UnicodeString; const expectedHashString: AnsiString): Boolean;
+class function TBCrypt.CheckPassword(const password: UnicodeString; const expectedHashString: string): Boolean;
 var
 	version: string;
 	cost: Integer;
@@ -511,9 +515,9 @@ begin
 	Result := (actualHashString = expectedHashString);
 end;
 
-class function TBCrypt.BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): AnsiString;
+class function TBCrypt.BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): string;
 
-	function EncodePacket(b1, b2, b3: Byte; Len: Integer): AnsiString;
+	function EncodePacket(b1, b2, b3: Byte; Len: Integer): string;
 	begin
 		Result := '';
 
@@ -577,22 +581,22 @@ begin
 			SelfTestF;
 end;
 
-class function TBCrypt.FormatPasswordHashForBsd(const cost: Integer; const salt, hash: array of Byte): AnsiString;
+class function TBCrypt.FormatPasswordHashForBsd(const cost: Integer; const salt, hash: array of Byte): string;
 var
-	saltString: AnsiString;
-	hashString: AnsiString;
+	saltString: string;
+	hashString: string;
 begin
 	saltString := BsdBase64Encode(salt, Length(salt));
-	hashString := BsdBase64Encode(hash, Length(hash)-1); //Yes, everything except the last byte
+	hashString := BsdBase64Encode(hash, Length(hash)-1); //Yes, everything except the last byte.
 		//OpenBSD, in the pseudo-base64 implementation, doesn't include the last byte of the hash
-		//Nobody knows why, but that's what all exists tests do - so it's what i do
+		//Nobody knows why, but that's what all existing tests do - so it's what i do
 
 	Result := Format('$2a$%.2d$%s%s', [cost, saltString, hashString]);
 end;
 
-class function TBCrypt.BsdBase64Decode(const s: AnsiString): TByteDynArray;
+class function TBCrypt.BsdBase64Decode(const s: string): TByteDynArray;
 
-	function Char64(character: AnsiChar): Integer;
+	function Char64(character: Char): Integer;
 	begin
 		if (Ord(character) > Length(BsdBase64DecodeTable)) then
 		begin
@@ -714,7 +718,7 @@ begin
 	// Convert source UTF-16 string (WideString) to the destination using the code-page
 	strLen := WideCharToMultiByte(CodePage, 0,
 			PWideChar(Source), Length(Source), //Source
-			PChar(cpStr), strLen, //Destination
+			PAnsiChar(cpStr), strLen, //Destination
 			nil, nil);
 	if strLen = 0 then
 	begin
@@ -729,10 +733,10 @@ end;
 class function TBCrypt.SelfTestB: Boolean;
 var
 	i: Integer;
-	salt: AnsiString;
-	encoded: AnsiString;
+	salt: string;
+	encoded: string;
 	data: TByteDynArray;
-	recoded: AnsiString;
+	recoded: string;
 begin
 	for i := Low(TestVectors) to High(TestVectors) do
 	begin
@@ -754,13 +758,13 @@ class function TBCrypt.SelfTestA: Boolean;
 var
 	i: Integer;
 
-	procedure t(const password: AnsiString; const HashSalt: AnsiString; const ExpectedHashString: AnsiString);
+	procedure t(const password: UnicodeString; const HashSalt: string; const ExpectedHashString: string);
 	var
 		version: string;
 		cost: Integer;
 		salt: TByteDynArray;
 		hash: TByteDynArray;
-		actualHashString: AnsiString;
+		actualHashString: string;
 	begin
 		//Extract "$2a$06$If6bvum7DFjUnE9p2uDeDu" rounds and base64 salt from the HashSalt
 		if not TBCrypt.TryParseHashString(HashSalt, {out}version, {out}cost, {out}salt) then
@@ -785,7 +789,7 @@ end;
 class function TBCrypt.SelfTestC: Boolean;
 var
 	s: UnicodeString;
-	hash: AnsiString;
+	hash: string;
 const
 	n: UnicodeString=''; //n=nothing.
 			//Work around bug in Delphi compiler when building widestrings
@@ -808,59 +812,6 @@ begin
 
 	Result := True;
 end;
-
-{ TBCryptTests }
-
-{$IFDEF UnitTests}
-procedure TBCryptTests.SelfTest;
-begin
-	CheckTrue(TBCrypt.SelfTest);
-end;
-{$ENDIF}
-
-class function TBCrypt.SelfTestD: Boolean;
-var
-	i: Integer;
-	password: string;
-	hash: string;
-begin
-	for i := 0 to 56 do
-	begin
-		password := Copy('The quick brown fox jumped over the lazy dog then sat on a log', 1, i);
-		hash := TBCrypt.HashPassword(password);
-		if (hash = '') then
-			raise Exception.Create('hash creation failed');
-	end;
-
-	Result := True;
-end;
-
-{$IFDEF UnitTests}
-procedure TBCryptTests.SelfTestA_KnownTestVectors;
-begin
-	CheckTrue(TBCrypt.SelfTestA);
-end;
-
-procedure TBCryptTests.SelfTestB_Base64EncoderDecoder;
-begin
-	CheckTrue(TBCrypt.SelfTestB);
-end;
-
-procedure TBCryptTests.SelfTestC_UnicodeStrings;
-begin
-	CheckTrue(TBCrypt.SelfTestC);
-end;
-
-procedure TBCryptTests.SelfTestD_VariableLengthPasswords;
-begin
-	CheckTrue(TBCrypt.SelfTestD);
-end;
-
-procedure TBCryptTests.SelfTestF_CorrectBattery;
-begin
-	CheckTrue(TBcrypt.SelfTestF);
-end;
-{$ENDIF}
 
 class function TBCrypt.GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 var
@@ -888,6 +839,23 @@ begin
 	Result := S_OK;
 end;
 
+class function TBCrypt.SelfTestD: Boolean;
+var
+	i: Integer;
+	password: string;
+	hash: string;
+begin
+	for i := 0 to 56 do
+	begin
+		password := Copy('The quick brown fox jumped over the lazy dog then sat on a log', 1, i);
+		hash := TBCrypt.HashPassword(password);
+		if (hash = '') then
+			raise Exception.Create('hash creation failed');
+	end;
+
+	Result := True;
+end;
+
 class function TBCrypt.SelfTestE: Boolean;
 var
 	salt: TByteDynArray;
@@ -902,6 +870,40 @@ end;
 class function TBCrypt.SelfTestF: Boolean;
 begin
 	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km');
+end;
+
+{$IFDEF UnitTests}
+
+{ TBCryptTests }
+
+procedure TBCryptTests.SelfTest;
+begin
+	CheckTrue(TBCrypt.SelfTest);
+end;
+
+procedure TBCryptTests.SelfTestA_KnownTestVectors;
+begin
+	CheckTrue(TBCrypt.SelfTestA);
+end;
+
+procedure TBCryptTests.SelfTestB_Base64EncoderDecoder;
+begin
+	CheckTrue(TBCrypt.SelfTestB);
+end;
+
+procedure TBCryptTests.SelfTestC_UnicodeStrings;
+begin
+	CheckTrue(TBCrypt.SelfTestC);
+end;
+
+procedure TBCryptTests.SelfTestD_VariableLengthPasswords;
+begin
+	CheckTrue(TBCrypt.SelfTestD);
+end;
+
+procedure TBCryptTests.SelfTestF_CorrectBattery;
+begin
+	CheckTrue(TBcrypt.SelfTestF);
 end;
 
 procedure TBCryptTests.SpeedTests;
@@ -922,7 +924,8 @@ var
 		Status(Format('BCrypt, cost=%d: %.2f ms', [cost, timeus]));
 	end;
 begin
-	QueryPerformanceFrequency(freq);
+	if not QueryPerformanceFrequency(freq) then
+		freq := -1; //negative one, so that a division results in negative ticks, rather than infinite or exception
 
 	TimeIt(8);
 	TimeIt(9);
@@ -934,6 +937,7 @@ begin
 	TimeIt(15);
 	TimeIt(16);
 end;
+{$ENDIF}
 
 initialization
 {$IFDEF UnitTests}
