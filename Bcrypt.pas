@@ -4,7 +4,7 @@ unit Bcrypt;
 	Sample Usage:
 
 		hash := TBCrypt.HashPassword('p@ssword1');     //hash using default cost (10)
-		hash := TBCrypt.HashPassword('p@ssword1', 14); //hash using custom cost factor of 13
+		hash := TBCrypt.HashPassword('p@ssword1', 14); //hash using custom cost factor of 14
 
 	Remarks
 
