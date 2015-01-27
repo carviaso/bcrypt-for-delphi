@@ -69,11 +69,20 @@ interface
 
 
 uses
-	Modernizer, Blowfish,
+	Blowfish,
 	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until Delphi ~7
+//	{$IFNDEF COMPILER_7_UP}Modernizer,{$ENDIF} //Support for pre-Delphi 7 (TByteDynArray, UnicodeString, etc)
 	Math, ComObj;
 
 type
+
+{$IFNDEF COMPILER_7_UP}
+	//Types didn't appear until Delphi 7-ish
+	UnicodeString = WideString;
+	TByteDynArray = array of Byte;
+{$ENDIF}
+
+
 	TBCrypt = class(TObject)
 	private
 		class function TryParseHashString(const hashString: string;
@@ -504,8 +513,9 @@ var
 	hash: TByteDynArray;
 	actualHashString: string;
 begin
-	if not TryParseHashString(expectedHashString,
-			{out}version, {out}cost, {out}salt) then
+	//TODO: This will fail if the old hash is version 2, and the new version is 2a
+
+	if not TryParseHashString(expectedHashString, {out}version, {out}cost, {out}salt) then
 		raise Exception.Create('Invalid hash string');
 
 	hash := TBCrypt.HashPassword(password, salt, cost);
