@@ -21,6 +21,11 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/marcelocantos/bcrypt-for-delphi)
 
+	Version 1.03     20150319
+			- Fix: Defined away Modernizer (so people who are not us can use it)
+			- Added: If no cost factor is specified when hashing a password,
+			  the cost factor is now a sliding factor, based on Moore's Law and when BCrypt was designed
+
 	Version 1.02     20141215
 			- Added support for XE2 string/UnicodeString/AnsiString
 			- Update: Updated code to work in 64-bit environment
