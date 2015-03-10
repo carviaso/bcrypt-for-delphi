@@ -131,19 +131,20 @@ uses
 const
 	BCRYPT_COST = 10; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
 	{
-		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz
+		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz (Launch: Q4'11) Delphi 5
+		3/09/2015  Intel Core i5-2500  CPU @ 1.60 GHz (Launch: Q1'11) Delphi XE6
 
-		| Cost | Iterations        |    Duration |
-		|------|-------------------|-------------|
-		|  8   |    256 iterations |     59.8 ms | <-- minimum allowed by BCrypt
-		|  9   |    512 iterations |    114.6 ms |
-		| 10   |  1,024 iterations |    234.8 ms | <-- current default (BCRYPT_COST=10)
-		| 11   |  2,048 iterations |    463.6 ms |
-		| 12   |  4,096 iterations |    924.3 ms |
-		| 13   |  8,192 iterations |  1,843.8 ms |
-		| 14   | 16,384 iterations |  3,693.2 ms |
-		| 15   | 32,768 iterations |  7,364.7 ms |
-		| 16   | 65,536 iterations | 14,602.8 ms |
+		| Cost | Iterations        |    i7-2700K |     i5-2500 |
+		|------|-------------------|-------------|-------------|
+		|  8   |    256 iterations |     59.8 ms |     39.9 ms | <-- minimum allowed by BCrypt
+		|  9   |    512 iterations |    114.6 ms |     67.4 ms |
+		| 10   |  1,024 iterations |    234.8 ms |    134.3 ms | <-- current default (BCRYPT_COST=10)
+		| 11   |  2,048 iterations |    463.6 ms |    269.9 ms |
+		| 12   |  4,096 iterations |    924.3 ms |    540.5 ms |
+		| 13   |  8,192 iterations |  1,843.8 ms |  1,079.0 ms |
+		| 14   | 16,384 iterations |  3,693.2 ms |  2,156.1 ms |
+		| 15   | 32,768 iterations |  7,364.7 ms |  4,531.8 ms |
+		| 16   | 65,536 iterations | 14,602.8 ms |  8,611.8 ms |
 	}
 
 	BCRYPT_SALT_LEN = 16; //bcrypt uses 128-bit (16-byte) salt (This isn't an adjustable parameter, just a name for a constant)
@@ -219,14 +220,104 @@ function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; 
 { TBCrypt }
 
 class function TBCrypt.HashPassword(const password: UnicodeString): string;
+var
+	months, rounds: Real;
+	cost: Integer;
 begin
 	{
-		Generate a has for the specified password using the default cost (10).
+		Generate a has for the specified password using the default cost.
 
 		Sample Usage:
 			hash := TBCrypt.HashPassword('correct horse battery stample');
+
+
 	}
-	Result := TBCrypt.HashPassword(password, BCRYPT_COST);
+{
+	Rather than using a fixed default cost, use a Moore's Law sliding constant, given that we know that the BCrypt algorithm
+	started in 1999 with a "normal user" cost of 6 (i.e. 2^6 = 64 rounds).
+
+	Moore's Law says computing power doubles every 18 months
+
+		| Date     |  Iterations    | Cost |
+		|----------|----------------|------|
+		| 1/1/2000 |            64  | 6    |
+		| 7/1/2001 |           128  | 7    |
+		| 1/1/2003 |           256  | 8    |
+		| 7/1/2004 |           512  | 9    |
+		| 1/1/2006 |         1,024  | 10   |
+		| 6/1/2007 |         2,048  | 11   |
+		| 1/1/2009 |         4,096  | 12   |
+		| 6/1/2010 |         8,192  | 13   |
+		| 1/1/2012 |        16,384  | 14   |
+		| 7/1/2013 |        32,768  | 15   |
+		| 1/1/2015 |        65,536  | 16   |
+		| 6/1/2016 |       131,070  | 17   |
+		| 1/1/2018 |       262,144  | 18   |
+		| 6/1/2019 |       524,288  | 19   |
+		| 1/1/2021 |     1,048,576  | 20   |
+		| 7/1/2022 |     2,097,152  | 21   |
+		| 1/1/2024 |     4,194,304  | 22   |
+		| 6/1/2025 |     8,388,472  | 23   |
+		| 1/1/2027 |    16,777,216  | 24   |
+		| 6/1/2028 |    33,553,843  | 25   |
+		| 1/1/2030 |    67,108,864  | 26   |
+		| 7/1/2031 |   134,217,728  | 27   |
+		| 1/1/2033 |   268,435,456  | 28   |
+		| 1/1/2035 |   536,870,912  | 29   |
+		| 1/1/2036 | 1,073,741,824  | 30   |
+		| 6/1/2037 | 2,147,437,008  | 31   |
+}
+
+{
+	Rather than using a fixed default cost, use a Moore's Law sliding constant.
+	Given that we know that when the BCrypt algorithm was published in 1999, a "normal user" has
+	a cost factor of 6 (i.e. 2^6 = 64 rounds).
+
+	Moore's Law says computing power doubles every 18 months, that means the cost factor should increase by one every 18 months
+
+		| Date     |  Iterations    | Cost | i7-2700K    |
+		|----------|----------------|------|-------------|
+		| 1/1/2000 |            64  | 6    |             |
+		| 7/1/2001 |           128  | 7    |             |
+		| 1/1/2003 |           256  | 8    |     59.8 ms |
+		| 7/1/2004 |           512  | 9    |    114.6 ms |
+		| 1/1/2006 |         1,024  | 10   |    234.8 ms | <--BCRYPT_COST=10)
+		| 6/1/2007 |         2,048  | 11   |    463.6 ms |
+		| 1/1/2009 |         4,096  | 12   |    924.3 ms |
+		| 6/1/2010 |         8,192  | 13   |  1,843.8 ms |
+		| 1/1/2012 |        16,384  | 14   |  3,693.2 ms |
+		| 7/1/2013 |        32,768  | 15   |  7.364.7 ms |
+		| 1/1/2015 |        65,536  | 16   | 14,602.8 ms |
+		| 6/1/2016 |       131,070  | 17   |             |
+		| 1/1/2018 |       262,144  | 18   |             |
+		| 6/1/2019 |       524,288  | 19   |             |
+		| 1/1/2021 |     1,048,576  | 20   |             |
+		| 7/1/2022 |     2,097,152  | 21   |             |
+		| 1/1/2024 |     4,194,304  | 22   |             |
+		| 6/1/2025 |     8,388,472  | 23   |             |
+		| 1/1/2027 |    16,777,216  | 24   |             |
+		| 6/1/2028 |    33,553,843  | 25   |             |
+		| 1/1/2030 |    67,108,864  | 26   |             |
+		| 7/1/2031 |   134,217,728  | 27   |             |
+		| 1/1/2033 |   268,435,456  | 28   |             |
+		| 1/1/2035 |   536,870,912  | 29   |             |
+		| 1/1/2036 | 1,073,741,824  | 30   |             |
+		| 6/1/2037 | 2,147,437,008  | 31   |             |
+}
+
+	months := (Now - EncodeDate(2000, 1, 1))/365.242*12;
+
+	//Give everyone 5 years (60 months) to buy the new computers.
+	//This was determined emperically on 3/9/2015 so that the cost today is 12 (900 ms), rather than 16 (14.6 seconds)
+	months := months - 60;
+
+	rounds := 64 * Power(2, months/18);
+	cost := Floor(ln(rounds)/ln(2));
+
+	if cost < BCRYPT_COST then
+		cost := BCRYPT_COST;
+
+	Result := TBCrypt.HashPassword(password, cost);
 end;
 
 class function TBCrypt.HashPassword(const password: UnicodeString; cost: Integer): string;
