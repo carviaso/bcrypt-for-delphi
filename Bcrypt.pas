@@ -21,6 +21,10 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/marcelocantos/bcrypt-for-delphi)
 
+	Version 1.04     20150312
+			- Performance improvement: ExpandKey: Hoisted loop variable, use xor to calculate SaltHalfIndex to avoid speculative execution jump, unrolled loop to two 32-bit XORs (16% faster)
+			- Performance improvement (D5,D7): Now use pure pascal version of FastCode Move() (50% faster)
+
 	Version 1.03     20150319
 			- Fix: Defined away Modernizer (so people who are not us can use it)
 			- Added: If no cost factor is specified when hashing a password,
@@ -74,9 +78,8 @@ interface
 
 
 uses
-	Blowfish,
-	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until Delphi ~7
-//	{$IFNDEF COMPILER_7_UP}Modernizer,{$ENDIF} //Support for pre-Delphi 7 (TByteDynArray, UnicodeString, etc)
+	Blowfish, SysUtils,
+//	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until Delphi ~7
 	Math, ComObj;
 
 type
@@ -84,23 +87,24 @@ type
 {$IFNDEF COMPILER_7_UP}
 	//Types didn't appear until Delphi 7-ish
 	UnicodeString = WideString;
-	TByteDynArray = array of Byte;
+	TBytes = array of Byte;
+	NativeInt = LongInt;
 {$ENDIF}
 
 
 	TBCrypt = class(TObject)
 	private
 		class function TryParseHashString(const hashString: string;
-				out version: string; out Cost: Integer; out Salt: TByteDynArray): Boolean;
+				out version: string; out Cost: Integer; out Salt: TBytes): Boolean;
 	protected
 		class function EksBlowfishSetup(const Cost: Integer; salt, key: array of Byte): TBlowfishData;
 		class procedure ExpandKey(var state: TBlowfishData; salt, key: array of Byte);
-		class function CryptCore(const Cost: Integer; Key: array of Byte; salt: array of Byte): TByteDynArray;
+		class function CryptCore(const Cost: Integer; Key: array of Byte; salt: array of Byte): TBytes;
 
 		class function FormatPasswordHashForBsd(const cost: Integer; const salt: array of Byte; const hash: array of Byte): string;
 
 		class function BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): string;
-		class function BsdBase64Decode(const s: string): TByteDynArray;
+		class function BsdBase64Decode(const s: string): TBytes;
 
 		class function WideStringToUtf8(const Source: UnicodeString): AnsiString;
 
@@ -119,9 +123,9 @@ type
 		class function CheckPassword(const password: UnicodeString; const expectedHashString: string): Boolean; overload;
 
 		//If you want to handle the cost, salt, and encoding yourself, you can do that.
-		class function HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TByteDynArray; overload;
+		class function HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TBytes; overload;
 		class function CheckPassword(const password: UnicodeString; const salt, hash: array of Byte; const Cost: Integer): Boolean; overload;
-		class function GenerateSalt: TByteDynArray;
+		class function GenerateSalt: TBytes;
 
 		class function SelfTest: Boolean;
 	end;
@@ -129,7 +133,7 @@ type
 implementation
 
 uses
-	Windows, SysUtils,
+	Windows,
 {$IFDEF UnitTests}TestFramework,{$ENDIF}
 	ActiveX;
 
@@ -137,19 +141,22 @@ const
 	BCRYPT_COST = 10; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
 	{
 		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz (Launch: Q4'11) Delphi 5
-		3/09/2015  Intel Core i5-2500  CPU @ 1.60 GHz (Launch: Q1'11) Delphi XE6
+		3/12/2015  Intel Core i7-2700K CPU @ 3.50 GHz Delphi XE6 (32-bit)
+		3/12/2015  Intel Core i7-2700K CPU @ 3.50 GHz Delphi XE6 (64-bit)
 
-		| Cost | Iterations        |    i7-2700K |     i5-2500 |
-		|------|-------------------|-------------|-------------|
-		|  8   |    256 iterations |     59.8 ms |     39.9 ms | <-- minimum allowed by BCrypt
-		|  9   |    512 iterations |    114.6 ms |     67.4 ms |
-		| 10   |  1,024 iterations |    234.8 ms |    134.3 ms | <-- current default (BCRYPT_COST=10)
-		| 11   |  2,048 iterations |    463.6 ms |    269.9 ms |
-		| 12   |  4,096 iterations |    924.3 ms |    540.5 ms |
-		| 13   |  8,192 iterations |  1,843.8 ms |  1,079.0 ms |
-		| 14   | 16,384 iterations |  3,693.2 ms |  2,156.1 ms |
-		| 15   | 32,768 iterations |  7,364.7 ms |  4,531.8 ms |
-		| 16   | 65,536 iterations | 14,602.8 ms |  8,611.8 ms |
+		| Cost | Iterations        |    Delphi 5 | Delphi XE6 |  Delphi XE6 |
+		|      |                   |             |     32-bit |      64-bit |
+		|------|-------------------|-------------|------------|-------------|
+		|  8   |    256 iterations |     59.8 ms |    38.2 ms |     43.6 ms | <-- minimum allowed by BCrypt
+		|  9   |    512 iterations |    114.6 ms |    74.8 ms |     87.1 ms |
+		| 10   |  1,024 iterations |    234.8 ms |   152.4 ms |    173.8 ms | <-- current default (BCRYPT_COST=10)
+		| 11   |  2,048 iterations |    463.6 ms |   296.6 ms |    343.9 ms |
+		| 12   |  4,096 iterations |    924.3 ms |   594.3 ms |    686.6 ms |
+		| 13   |  8,192 iterations |  1,843.8 ms | 1,169.5 ms |  1,354.4 ms |
+		| 14   | 16,384 iterations |  3,693.2 ms | 2,338.8 ms |  2,715.5 ms |
+		| 15   | 32,768 iterations |  7,364.7 ms | 4,656.0 ms |  5,418.2 ms |
+		| 16   | 65,536 iterations | 14,602.8 ms | 9,302.2 ms | 10,840.5 ms |
+
 	}
 
 	BCRYPT_SALT_LEN = 16; //bcrypt uses 128-bit (16-byte) salt (This isn't an adjustable parameter, just a name for a constant)
@@ -327,8 +334,8 @@ end;
 
 class function TBCrypt.HashPassword(const password: UnicodeString; cost: Integer): string;
 var
-	salt: TByteDynArray;
-	hash: TByteDynArray;
+	salt: TBytes;
+	hash: TBytes;
 begin
 	{
 		Generate a hash for the supplied password using the specified cost.
@@ -345,10 +352,10 @@ begin
 	Result := FormatPasswordHashForBsd(cost, salt, hash);
 end;
 
-class function TBCrypt.GenerateSalt: TByteDynArray;
+class function TBCrypt.GenerateSalt: TBytes;
 var
 	type4Uuid: TGUID;
-	salt: TByteDynArray;
+	salt: TBytes;
 begin
 	//Salt is a 128-bit (16 byte) random value
 	SetLength(salt, BCRYPT_SALT_LEN);
@@ -362,9 +369,9 @@ begin
 	Result := salt;
 end;
 
-class function TBCrypt.HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TByteDynArray;
+class function TBCrypt.HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TBytes;
 var
-	key: TByteDynArray;
+	key: TBytes;
 	len: Integer;
 	utf8Password: AnsiString;
 begin
@@ -389,7 +396,7 @@ begin
 	Result := TBCrypt.CryptCore(cost, key, salt);
 end;
 
-class function TBCrypt.CryptCore(const Cost: Integer; key, salt: array of Byte): TByteDynArray;
+class function TBCrypt.CryptCore(const Cost: Integer; key, salt: array of Byte): TBytes;
 var
 	state: TBlowfishData;
 	i: Integer;
@@ -462,12 +469,13 @@ var
 	A: DWord;
 	KeyB: PByteArray;
 	Block: array[0..7] of Byte;
-	Len: Integer;
-	saltHalf: Integer;
+	len: Integer;
+	//saltHalf: Integer;
+	saltHalfIndex: Integer;
 begin
 	//ExpandKey phase of the Expensive key setup
-	Len := Length(key);
-	if (Len > 56) then
+	len := Length(key);
+	if (len > 56) then
 		raise Exception.Create('Blowfish: Key must be between 1 and 56 bytes long');
 
 	{
@@ -482,12 +490,12 @@ begin
 		k := 0;
 		for i := 0 to 17 do
 		begin
-			A :=      KeyB[(k+3) mod Len];
-			A := A + (KeyB[(k+2) mod Len] shl 8);
-			A := A + (KeyB[(k+1) mod Len] shl 16);
+			A :=      KeyB[(k+3) mod len];
+			A := A + (KeyB[(k+2) mod len] shl 8);
+			A := A + (KeyB[(k+1) mod len] shl 16);
 			A := A + (KeyB[k]             shl 24);
 			State.PBoxM[i] := State.PBoxM[i] xor A;
-			k := (k+4) mod Len;
+			k := (k+4) mod len;
 		end;
 	end;
 
@@ -498,13 +506,19 @@ begin
 	State.PBoxM[0] := Block[3] + (Block[2] shl 8) + (Block[1] shl 16) + (Block[0] shl 24);
 	State.PBoxM[1] := Block[7] + (Block[6] shl 8) + (Block[5] shl 16) + (Block[4] shl 24);
 
-	saltHalf := 1;
+{$RANGECHECKS OFF}
+	saltHalfIndex := 8;
 	for i := 1 to 8 do
 	begin
 		//That same ciphertext is also XORed with the second 64-bits of salt
-		for k := 0 to 7 do
-			block[k] := block[k] xor salt[(saltHalf*8)+k]; //Salt is 0..15 (0..7 is first block, 8..15 is second block)
-		saltHalf := saltHalf xor 1;
+
+		//Delphi compiler is not worth its salt; it doesn't do hoisting ("Any compiler worth its salt will hoist" - Eric Brumer C++ compiler team)
+		//Salt is 0..15 (0..7 is first block, 8..15 is second block)
+		PLongWord(@block[0])^ := PLongWord(@block[0])^ xor PLongWord(@salt[saltHalfIndex  ])^;
+		PLongWord(@block[4])^ := PLongWord(@block[4])^ xor PLongWord(@salt[saltHalfIndex+4])^;
+
+		//saltHalf := saltHalf xor 1;
+		saltHalfIndex := saltHalfIndex xor 8;
 
 		//and the result encrypted with the new state of the key schedule
 		BlowfishEncryptECB(State, @Block, @Block);
@@ -520,23 +534,28 @@ begin
 		for i := 0 to 127 do
 		begin
 			//That same ciphertext is also XORed with the second 64-bits of salt
-			for k := 0 to 7 do
-				block[k] := block[k] xor salt[(saltHalf*8 mod 16)+k]; //Salt is 0..15 (0..7 is first block, 8..15 is second block)
-			saltHalf := saltHalf xor 1;
+			//Delphi compiler is not worth its salt; it doesn't do hoisting ("Any compiler worth its salt will hoist" - Eric Brumer C++ compiler team)
+			//Salt is 0..15 (0..7 is first block, 8..15 is second block)
+			PLongWord(@block[0])^ := PLongWord(@block[0])^ xor PLongWord(@salt[saltHalfIndex  ])^;
+			PLongWord(@block[4])^ := PLongWord(@block[4])^ xor PLongWord(@salt[saltHalfIndex+4])^;
+
+			//saltHalf := saltHalf xor 1;
+			saltHalfIndex := saltHalfIndex xor 8;
 
 			//and the result encrypted with the new state of the key schedule
 			BlowfishEncryptECB(State, @Block, @Block);
 
 			// The output of the second encryption replaces subkeys S1 and P2. (S[0] and S[1])
-			State.SBoxM[j, i*2] :=   Block[3] + (Block[2] shl 8) + (Block[1] shl 16) + (Block[0] shl 24);
+			State.SBoxM[j, i*2  ] := Block[3] + (Block[2] shl 8) + (Block[1] shl 16) + (Block[0] shl 24);
 			State.SBoxM[j, i*2+1] := Block[7] + (Block[6] shl 8) + (Block[5] shl 16) + (Block[4] shl 24);
 		end;
 	end;
+{$RANGECHECKS ON}
 end;
 
 class function TBCrypt.CheckPassword(const password: UnicodeString; const salt, hash: array of Byte; const Cost: Integer): Boolean;
 var
-	candidateHash: TByteDynArray;
+	candidateHash: TBytes;
 	len: Integer;
 begin
 	Result := False;
@@ -551,7 +570,7 @@ begin
 end;
 
 class function TBCrypt.TryParseHashString(const hashString: string;
-		out version: string; out Cost: Integer; out Salt: TByteDynArray): Boolean;
+		out version: string; out Cost: Integer; out Salt: TBytes): Boolean;
 var
 	work: string;
 	s: string;
@@ -605,8 +624,8 @@ class function TBCrypt.CheckPassword(const password: UnicodeString; const expect
 var
 	version: string;
 	cost: Integer;
-	salt: TByteDynArray;
-	hash: TByteDynArray;
+	salt: TBytes;
+	hash: TBytes;
 	actualHashString: string;
 begin
 	//TODO: This will fail if the old hash is version 2, and the new version is 2a
@@ -700,7 +719,7 @@ begin
 	Result := Format('$2a$%.2d$%s%s', [cost, saltString, hashString]);
 end;
 
-class function TBCrypt.BsdBase64Decode(const s: string): TByteDynArray;
+class function TBCrypt.BsdBase64Decode(const s: string): TBytes;
 
 	function Char64(character: Char): Integer;
 	begin
@@ -841,7 +860,7 @@ var
 	i: Integer;
 	salt: string;
 	encoded: string;
-	data: TByteDynArray;
+	data: TBytes;
 	recoded: string;
 begin
 	for i := Low(TestVectors) to High(TestVectors) do
@@ -868,8 +887,8 @@ var
 	var
 		version: string;
 		cost: Integer;
-		salt: TByteDynArray;
-		hash: TByteDynArray;
+		salt: TBytes;
+		hash: TBytes;
 		actualHashString: string;
 	begin
 		//Extract "$2a$06$If6bvum7DFjUnE9p2uDeDu" rounds and base64 salt from the HashSalt
@@ -964,7 +983,7 @@ end;
 
 class function TBCrypt.SelfTestE: Boolean;
 var
-	salt: TByteDynArray;
+	salt: TBytes;
 begin
 	salt := TBCrypt.GenerateSalt;
 	if Length(salt) <> BCRYPT_SALT_LEN then

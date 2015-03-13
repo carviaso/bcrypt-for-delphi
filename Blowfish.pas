@@ -61,6 +61,13 @@ procedure BlowfishInitState(var State: TBlowfishData);
 
 implementation
 
+{$IFDEF VER130} //Delphi 5
+	{$DEFINE UseFastMove}
+{$ENDIF}
+{$IFDEF VER150} //Delphi 7
+	{$DEFINE UseFastMove}
+{$ENDIF}
+
 {$IFDEF UnitTests}
 uses
 	TestFramework;
@@ -286,6 +293,76 @@ begin
 	if (P[Len-1]= 0) and (Len> 1) then
 		IncBlock(P,Len-1);
 end;
+
+{$IFDEF UseFastMove}
+{
+	The pure pascal version of Move from FastCode.
+	We only need to use it if we're on a version of Delphi before they started using FastCode internally.
+	Since i don't know when that was, and i also don't care, i only define it in for Delphi 5 and 7 (the ones i might use)
+}
+procedure FastMove(const Source; var Dest; Count: Integer);
+var
+  S, D       : Cardinal;
+  Temp, C, I : Integer;
+  L          : PInteger;
+begin
+  S := Cardinal(@Source);
+  D := Cardinal(@Dest);
+  if S = D then
+    Exit;
+  if Count <= 4 then           
+    case Count of
+      1 : PByte(@Dest)^ := PByte(S)^;
+      2 : PWord(@Dest)^ := PWord(S)^;
+      3 : if D > S then
+            begin
+              PByte(Integer(@Dest)+2)^ := PByte(S+2)^;
+              PWord(@Dest)^ := PWord(S)^;
+            end
+          else
+            begin
+              PWord(@Dest)^ := PWord(S)^;
+              PByte(Integer(@Dest)+2)^ := PByte(S+2)^;
+				end;
+      4 : PInteger(@Dest)^ := PInteger(S)^
+      else Exit; {Count <= 0}
+    end
+  else
+    if D > S then
+      begin
+        Temp := PInteger(S)^;
+		  I := Integer(@Dest);
+        C := Count - 4;
+        L := PInteger(Integer(@Dest) + C);
+        Inc(S, C);
+        repeat
+          L^ := PInteger(S)^;
+          if Count <= 8 then
+            Break;
+          Dec(Count, 4);
+          Dec(S, 4);
+          Dec(L);
+        until False;
+        PInteger(I)^ := Temp;
+      end
+    else
+      begin
+        C := Count - 4;
+        Temp := PInteger(S + Cardinal(C))^;
+        I := Integer(@Dest) + C;
+        L := @Dest;
+        repeat
+          L^ := PInteger(S)^;
+          if Count <= 8 then
+            Break;
+          Dec(Count, 4);
+          Inc(S, 4);
+          Inc(L);
+        until False;
+        PInteger(I)^ := Temp;
+		end;
+end;
+{$ENDIF}
 
 function BlowfishSelfTest;
 
@@ -547,8 +624,14 @@ procedure BlowfishEncryptECB(const Data: TBlowfishData; InData, OutData: Pointer
 var
   xL, xR: DWord;
 begin
+{$IFNDEF UseFastMove}
   Move(InData^, xL, 4);
   Move(Pointer(Integer(InData)+4)^, xR, 4);
+{$ELSE}
+  FastMove(InData^, xL, 4);
+  FastMove(Pointer(Integer(InData)+4)^, xR, 4);
+{$ENDIF}
+
   xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
   xR := (xR shr 24) or ((xR shr 8) and $FF00) or ((xR shl 8) and $FF0000) or (xR shl 24);
   xL := xL xor Data.PBoxM[0];
@@ -571,16 +654,28 @@ begin
   xR := xR xor Data.PBoxM[17];
   xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
   xR := (xR shr 24) or ((xR shr 8) and $FF00) or ((xR shl 8) and $FF0000) or (xR shl 24);
+
+{$IFNDEF UseFastMove}
   Move(xR, OutData^, 4);
   Move(xL, Pointer(Integer(OutData)+4)^, 4);
+{$ELSE}
+  FastMove(xR, OutData^, 4);
+  FastMove(xL, Pointer(Integer(OutData)+4)^, 4);
+{$ENDIF}
 end;
 
 procedure BlowfishDecryptECB(const Data: TBlowfishData; InData, OutData: Pointer);
 var
   xL, xR: DWord;
 begin
+{$IFNDEF UseFastMove}
   Move(InData^, xL, 4);
   Move(Pointer(Integer(InData)+4)^, xR, 4);
+{$ELSE}
+  FastMove(InData^, xL, 4);
+  FastMove(Pointer(Integer(InData)+4)^, xR, 4);
+{$ENDIF}
+
   xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
   xR := (xR shr 24) or ((xR shr 8) and $FF00) or ((xR shl 8) and $FF0000) or (xR shl 24);
   xL := xL xor Data.PBoxM[17];
@@ -603,8 +698,14 @@ begin
   xR := xR xor Data.PBoxM[0];
   xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
   xR := (xR shr 24) or ((xR shr 8) and $FF00) or ((xR shl 8) and $FF0000) or (xR shl 24);
+
+{$IFNDEF UseFastMove}
   Move(xR, OutData^, 4);
   Move(xL, Pointer(Integer(OutData)+4)^, 4);
+{$ELSE}
+  Move(xR, OutData^, 4);
+  Move(xL, Pointer(Integer(OutData)+4)^, 4);
+{$ENDIF}
 end;
 {$OVERFLOWCHECKS ON}
 
