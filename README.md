@@ -1,12 +1,12 @@
 Bcrypt for Delphi
 ==================
 
-[Bcrypt](http://en.wikipedia.org/wiki/Bcrypt) is an algorithm designed for hashing passwords, and only passwords; i.e., it's:
+[Bcrypt](http://en.wikipedia.org/wiki/Bcrypt) is an algorithm designed for hashing passwords, and only passwords; i.e. it is:
 
-- not a high-speed, generic hashing algorithm;
-- not a key derivation function (see [PBDKF2](http://en.wikipedia.org/wiki/PBKDF2), [scrypt](http://en.wikipedia.org/wiki/Scrypt)
-- computationally and memory expensive;
-- limited to passwords of 55 bytes.
+- **not** a high-speed, generic, hashing algorithm
+- **not** a key derivation function (see [PBDKF2](http://en.wikipedia.org/wiki/PBKDF2), [scrypt](http://en.wikipedia.org/wiki/Scrypt))
+- computationally and memory expensive
+- limited to passwords of 55 bytes
 
 It was first [described by Niels Provos and David Mazières in 1999](http://static.usenix.org/events/usenix99/provos/provos.pdf) for OpenBSD.
 
@@ -38,17 +38,17 @@ The parts of the string are:
 | Value | Meaning | Notes |
 |-------|---------|-------|
 | 2a | Hash algorithm | "2a" = current version of BCrypt, "2" = obsolete version of BCrypt, "1" = MD5 |
-| 11 | cost factor | Will iterate for 2^11=2,048 rounds. (Default is 11) |
+| 11 | cost factor | Will iterate for 2<sup>11</sup>=2,048 rounds. (Default is 11) |
 | Ro0CUfOqk6cXEKf3dyaM7O | Salt | 22 base64 encoded characters |
 | hSCvnwM9s4wIX9JeLapehKK5YdLxKcm | Hashed password | 31 base64 encoded characters |
 
 Because the **cost factor** is stored with the hash output, bcrypt hashes are backwards and forwards compatible with
-	changing the number of rounds. It also makes BCrypt extraordinarily convenient; a random salt is automatically generated and stored for you.
+	changing the number of rounds. It also makes BCrypt extraordinarily convenient in that a random salt is automatically generated and stored for you (you don't have to worry about storing or retrieving it).
 
 Speed Tests
 --------------
 
-The current (3/21/2015) hard-coded default for cost is **11**. This results in 2^11 = 2,048 rounds during the key setup.
+The current (3/21/2015) hard-coded default for cost is **11**. This results in 2<sup>11</sup> = 2,048 rounds during the key setup.
 
 3/14/2015  Intel Core i5-2500 CPU @ 3.50 GHz Delphi XE6 (32-bit, Release)
 
