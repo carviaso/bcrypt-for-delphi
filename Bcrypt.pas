@@ -21,6 +21,12 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/marcelocantos/bcrypt-for-delphi)
 
+	Version 1.05     20150321
+			- Performance improvement: Was so worried about using faster verison of Move, that  i didn't stop to notice
+			  that i shouldn't even be using a move; but a 32-bit assignment in BlowfishEncryptECB and BlowfishDecryptECB
+			- Fix: Fixed bug in EksBlowfishSetup. If you used a cost factor 31 (2,147,483,648), then the Integer loop
+			  control variable would overflow and the expensive key setup wouldn't run at all (zero iterations)
+
 	Version 1.04     20150312
 			- Performance improvement: ExpandKey: Hoisted loop variable, use xor to calculate SaltHalfIndex to avoid speculative execution jump, unrolled loop to two 32-bit XORs (16% faster)
 			- Performance improvement (D5,D7): Now use pure pascal version of FastCode Move() (50% faster)
@@ -116,6 +122,9 @@ type
 		class function SelfTestF: Boolean; //correctbatteryhorsestapler
 
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
+
+		class function GetModernCost_Benchmark: Integer;
+		class function GetModernCost_MooresLaw: Integer;
 	public
 		//Hashes a password into the OpenBSD password-file format (non-standard base-64 encoding). Also validate that BSD style string
 		class function HashPassword(const password: UnicodeString): string; overload;
@@ -134,28 +143,26 @@ implementation
 
 uses
 	Windows,
+{$IFDEF Sqm}SqmApi,{$ENDIF}
 {$IFDEF UnitTests}TestFramework,{$ENDIF}
 	ActiveX;
 
 const
-	BCRYPT_COST = 10; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
+	BCRYPT_COST = 11; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
 	{
-		1/23/2014  Intel Core i7-2700K CPU @ 3.50 GHz (Launch: Q4'11) Delphi 5
-		3/12/2015  Intel Core i7-2700K CPU @ 3.50 GHz Delphi XE6 (32-bit)
-		3/12/2015  Intel Core i7-2700K CPU @ 3.50 GHz Delphi XE6 (64-bit)
+		3/14/2015  Intel Core i5-2500 CPU @ 3.50 GHz Delphi XE6 (32-bit, Release)
 
-		| Cost | Iterations        |    Delphi 5 | Delphi XE6 |  Delphi XE6 |
-		|      |                   |             |     32-bit |      64-bit |
-		|------|-------------------|-------------|------------|-------------|
-		|  8   |    256 iterations |     59.8 ms |    38.2 ms |     43.6 ms | <-- minimum allowed by BCrypt
-		|  9   |    512 iterations |    114.6 ms |    74.8 ms |     87.1 ms |
-		| 10   |  1,024 iterations |    234.8 ms |   152.4 ms |    173.8 ms | <-- current default (BCRYPT_COST=10)
-		| 11   |  2,048 iterations |    463.6 ms |   296.6 ms |    343.9 ms |
-		| 12   |  4,096 iterations |    924.3 ms |   594.3 ms |    686.6 ms |
-		| 13   |  8,192 iterations |  1,843.8 ms | 1,169.5 ms |  1,354.4 ms |
-		| 14   | 16,384 iterations |  3,693.2 ms | 2,338.8 ms |  2,715.5 ms |
-		| 15   | 32,768 iterations |  7,364.7 ms | 4,656.0 ms |  5,418.2 ms |
-		| 16   | 65,536 iterations | 14,602.8 ms | 9,302.2 ms | 10,840.5 ms |
+		| Cost | Iterations        |  3/14/2015 |
+		|------|-------------------|------------|
+		|  8   |    256 iterations |    22.0 ms | <-- minimum allowed by BCrypt
+		|  9   |    512 iterations |    43.3 ms |
+		| 10   |  1,024 iterations |    85.5 ms | <-- current default (BCRYPT_COST=10)
+		| 11   |  2,048 iterations |   173.3 ms |
+		| 12   |  4,096 iterations |   345.6 ms |
+		| 13   |  8,192 iterations |   694.3 ms |
+		| 14   | 16,384 iterations | 1,390.5 ms |
+		| 15   | 32,768 iterations | 2,781.4 ms |
+		| 16   | 65,536 iterations | 5,564.9 ms |
 
 	}
 
@@ -233,98 +240,38 @@ function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; 
 
 class function TBCrypt.HashPassword(const password: UnicodeString): string;
 var
-	months, rounds: Real;
 	cost: Integer;
 begin
 	{
-		Generate a has for the specified password using the default cost.
+		Generate a hash for the specified password using the default cost.
 
 		Sample Usage:
 			hash := TBCrypt.HashPassword('correct horse battery stample');
 
 
+	Rather than using a fixed default cost, use a self-adjusting cost.
+	We give ourselves two methods:
+
+		- Moore's Law sliding constant
+		- Benchmark
+
+	The problem with using Moore's Law is that it's falling behind for single-core performance.
+	Since 2004, single-core performance is only going up 21% per year, rather than the 26% of Moore's Law.
+
+			26%/year ==> doubles every 18 months
+			21%/year ==> doubles every 44 months
+
+	So i could use a more practical variation of Moore's Law. Knowing that it is now doubling every 44 months,
+	and that i want the target speed to be between 500-750ms, i could use the new value.
+
+	The alternative is to run a quick benchmark. It only takes 1.8ms to do a cost=4 has. Use it benchmark the computer.
+
+	The 3rd alternative would be to run the hash as normal, and time it. If it takes less than 500ms to calculate, then
+	do it again with a cost of BCRYPT_COST+1.
 	}
-{
-	Rather than using a fixed default cost, use a Moore's Law sliding constant, given that we know that the BCrypt algorithm
-	started in 1999 with a "normal user" cost of 6 (i.e. 2^6 = 64 rounds).
 
-	Moore's Law says computing power doubles every 18 months
 
-		| Date     |  Iterations    | Cost |
-		|----------|----------------|------|
-		| 1/1/2000 |            64  | 6    |
-		| 7/1/2001 |           128  | 7    |
-		| 1/1/2003 |           256  | 8    |
-		| 7/1/2004 |           512  | 9    |
-		| 1/1/2006 |         1,024  | 10   |
-		| 6/1/2007 |         2,048  | 11   |
-		| 1/1/2009 |         4,096  | 12   |
-		| 6/1/2010 |         8,192  | 13   |
-		| 1/1/2012 |        16,384  | 14   |
-		| 7/1/2013 |        32,768  | 15   |
-		| 1/1/2015 |        65,536  | 16   |
-		| 6/1/2016 |       131,070  | 17   |
-		| 1/1/2018 |       262,144  | 18   |
-		| 6/1/2019 |       524,288  | 19   |
-		| 1/1/2021 |     1,048,576  | 20   |
-		| 7/1/2022 |     2,097,152  | 21   |
-		| 1/1/2024 |     4,194,304  | 22   |
-		| 6/1/2025 |     8,388,472  | 23   |
-		| 1/1/2027 |    16,777,216  | 24   |
-		| 6/1/2028 |    33,553,843  | 25   |
-		| 1/1/2030 |    67,108,864  | 26   |
-		| 7/1/2031 |   134,217,728  | 27   |
-		| 1/1/2033 |   268,435,456  | 28   |
-		| 1/1/2035 |   536,870,912  | 29   |
-		| 1/1/2036 | 1,073,741,824  | 30   |
-		| 6/1/2037 | 2,147,437,008  | 31   |
-}
-
-{
-	Rather than using a fixed default cost, use a Moore's Law sliding constant.
-	Given that we know that when the BCrypt algorithm was published in 1999, a "normal user" has
-	a cost factor of 6 (i.e. 2^6 = 64 rounds).
-
-	Moore's Law says computing power doubles every 18 months, that means the cost factor should increase by one every 18 months
-
-		| Date     |  Iterations    | Cost | i7-2700K    |
-		|----------|----------------|------|-------------|
-		| 1/1/2000 |            64  | 6    |             |
-		| 7/1/2001 |           128  | 7    |             |
-		| 1/1/2003 |           256  | 8    |     59.8 ms |
-		| 7/1/2004 |           512  | 9    |    114.6 ms |
-		| 1/1/2006 |         1,024  | 10   |    234.8 ms | <--BCRYPT_COST=10)
-		| 6/1/2007 |         2,048  | 11   |    463.6 ms |
-		| 1/1/2009 |         4,096  | 12   |    924.3 ms |
-		| 6/1/2010 |         8,192  | 13   |  1,843.8 ms |
-		| 1/1/2012 |        16,384  | 14   |  3,693.2 ms |
-		| 7/1/2013 |        32,768  | 15   |  7.364.7 ms |
-		| 1/1/2015 |        65,536  | 16   | 14,602.8 ms |
-		| 6/1/2016 |       131,070  | 17   |             |
-		| 1/1/2018 |       262,144  | 18   |             |
-		| 6/1/2019 |       524,288  | 19   |             |
-		| 1/1/2021 |     1,048,576  | 20   |             |
-		| 7/1/2022 |     2,097,152  | 21   |             |
-		| 1/1/2024 |     4,194,304  | 22   |             |
-		| 6/1/2025 |     8,388,472  | 23   |             |
-		| 1/1/2027 |    16,777,216  | 24   |             |
-		| 6/1/2028 |    33,553,843  | 25   |             |
-		| 1/1/2030 |    67,108,864  | 26   |             |
-		| 7/1/2031 |   134,217,728  | 27   |             |
-		| 1/1/2033 |   268,435,456  | 28   |             |
-		| 1/1/2035 |   536,870,912  | 29   |             |
-		| 1/1/2036 | 1,073,741,824  | 30   |             |
-		| 6/1/2037 | 2,147,437,008  | 31   |             |
-}
-
-	months := (Now - EncodeDate(2000, 1, 1))/365.242*12;
-
-	//Give everyone 5 years (60 months) to buy the new computers.
-	//This was determined emperically on 3/9/2015 so that the cost today is 12 (900 ms), rather than 16 (14.6 seconds)
-	months := months - 60;
-
-	rounds := 64 * Power(2, months/18);
-	cost := Floor(ln(rounds)/ln(2));
+	cost := GetModernCost_Benchmark;
 
 	if cost < BCRYPT_COST then
 		cost := BCRYPT_COST;
@@ -402,10 +349,14 @@ var
 	i: Integer;
 	plainText: array[0..23] of Byte;
 	cipherText: array[0..23] of Byte;
-
+{$IFDEF Sqm}t1, t2: Int64;{$ENDIF}
 const
 	magicText: AnsiString = 'OrpheanBeholderScryDoubt'; //the 24-byte data we will be encrypting 64 times
 begin
+{$IFDEF Sqm}
+	t1 := Sqm.GetTimestamp;
+{$ENDIF}
+
 	state := TBCrypt.EksBlowfishSetup(cost, salt, key);
 
 	//Conceptually we are encrypting "OrpheanBeholderScryDoubt" 64 times
@@ -424,13 +375,21 @@ begin
 
 	SetLength(Result, 24);
 	Move(cipherText[0], Result[0], 24);
+
+{$IFDEF Sqm}
+	t2 := Sqm.GetTimestamp;
+	t2 := t2-t1;
+	Sqm.AddTicksToAverage('BCrypt/CryptCore', t2);
+	Sqm.AddTicksToAverage('BCrypt/CryptCore/Cost'+IntToStr(Cost), t2);
+{$ENDIF}
+
 end;
 
 
 class function TBCrypt.EksBlowfishSetup(const Cost: Integer; salt, key: array of Byte): TBlowfishData;
 var
 	rounds: Cardinal; //rounds = 2^cost
-	i: Integer;
+	i: Cardinal;
 	Len: Integer;
 const
 	zero: array[0..15] of Byte = (0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0);
@@ -964,6 +923,94 @@ begin
 	Result := S_OK;
 end;
 
+class function TBCrypt.GetModernCost_Benchmark: Integer;
+var
+	t1, t2, freq: Int64;
+	rounds: Real; //iterations per second
+const
+	key:  array[0..15] of Byte = (0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0);
+	salt: array[0..15] of Byte = (0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0);
+begin
+	{
+		Run a quick benchmark on the current machine to see how fast this PC is.
+		A cost of 4 is the lowest we allow, so we will hash with that.
+	}
+	Result := 0;
+
+	if not QueryPerformanceFrequency({var}freq) then Exit;
+	if (freq = 0) then Exit;
+	if not QueryPerformanceCounter(t1) then Exit;
+	if (t1 = 0) then Exit;
+
+	TBCrypt.CryptCore(4, key, salt);
+
+	if not QueryPerformanceCounter(t2) then Exit;
+	if t2=0 then Exit;
+	if t2=t1 then Exit;
+
+	{
+		Cost of 4 is 2^4 = 16 iterations.
+		We want a target of 500ms.
+
+		n = 0.5 * (i/s)
+	}
+	rounds := 0.75 * 16 * freq / (t2-t1);
+
+	Result := Math.Floor(Ln(rounds) / Ln(2));
+end;
+
+class function TBCrypt.GetModernCost_MooresLaw: Integer;
+var
+	months, rounds: Real;
+begin
+	{
+	Rather than using a fixed default cost, use a Moore's Law sliding constant.
+	Given that we know that when the BCrypt algorithm was published in 1999, a "normal user" has
+	a cost factor of 6 (i.e. 2^6 = 64 rounds).
+
+	Moore's Law says computing power doubles every 18 months,
+	so we should increase the Cost by one every 18 months.
+
+		| Date     |  Iterations    | Cost |i5-2500 Q1'11|
+		|----------|----------------|------|-------------|
+		| 1/1/2000 |            64  | 6    |             |
+		| 7/1/2001 |           128  | 7    |             |
+		| 1/1/2003 |           256  | 8    |     31.2 ms |
+		| 7/1/2004 |           512  | 9    |     57.5 ms |
+		| 1/1/2006 |         1,024  | 10   |    115.2 ms | <--BCRYPT_COST=10
+		| 6/1/2007 |         2,048  | 11   |    231.6 ms |
+		| 1/1/2009 |         4,096  | 12   |    469.8 ms |
+		| 6/1/2010 |         8,192  | 13   |    917.1 ms |
+		| 1/1/2012 |        16,384  | 14   |  1,840.5 ms |
+		| 7/1/2013 |        32,768  | 15   |  3,683.1 ms |
+		| 1/1/2015 |        65,536  | 16   |  7,363.8 ms |
+		| 6/1/2016 |       131,070  | 17   |             |
+		| 1/1/2018 |       262,144  | 18   |             |
+		| 6/1/2019 |       524,288  | 19   |             |
+		| 1/1/2021 |     1,048,576  | 20   |             |
+		| 7/1/2022 |     2,097,152  | 21   |             |
+		| 1/1/2024 |     4,194,304  | 22   |             |
+		| 6/1/2025 |     8,388,472  | 23   |             |
+		| 1/1/2027 |    16,777,216  | 24   |             |
+		| 6/1/2028 |    33,553,843  | 25   |             |
+		| 1/1/2030 |    67,108,864  | 26   |             |
+		| 7/1/2031 |   134,217,728  | 27   |             |
+		| 1/1/2033 |   268,435,456  | 28   |             |
+		| 1/1/2035 |   536,870,912  | 29   |             |
+		| 1/1/2036 | 1,073,741,824  | 30   |             |
+		| 6/1/2037 | 2,147,437,008  | 31   |             |
+}
+
+	months := (Now - EncodeDate(2000, 1, 1))/365.242*12;
+
+	//Give everyone 5 years (60 months) to buy the new computers.
+	//This was determined emperically on 3/9/2015 so that the cost today is 12 (900 ms), rather than 16 (14.6 seconds)
+	months := months - 60;
+
+	rounds := 64 * Power(2, months/18);
+	Result := Floor(ln(rounds)/ln(2));
+end;
+
 class function TBCrypt.SelfTestD: Boolean;
 var
 	i: Integer;
@@ -1060,7 +1107,10 @@ begin
 	TimeIt(13);
 	TimeIt(14);
 	TimeIt(15);
+//OutputDebugString('SAMPLING ON');
 	TimeIt(16);
+//OutputDebugString('SAMPLING OFF');
+//	TimeIt(17);
 end;
 {$ENDIF}
 
