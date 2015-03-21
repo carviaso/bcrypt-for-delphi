@@ -4,6 +4,7 @@ Bcrypt for Delphi
 [Bcrypt](http://en.wikipedia.org/wiki/Bcrypt) is an algorithm designed for hashing passwords, and only passwords; i.e., it's:
 
 - not a high-speed, generic hashing algorithm;
+- not a key derivation function (see [PBDKF2](http://en.wikipedia.org/wiki/PBKDF2), [scrypt](http://en.wikipedia.org/wiki/Scrypt)
 - computationally and memory expensive;
 - limited to passwords of 55 bytes.
 
