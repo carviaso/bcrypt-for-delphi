@@ -26,7 +26,10 @@ unit Bcrypt;
 			  that i shouldn't even be using a move; but a 32-bit assignment in BlowfishEncryptECB and BlowfishDecryptECB
 			- Fix: Fixed bug in EksBlowfishSetup. If you used a cost factor 31 (2,147,483,648), then the Integer loop
 			  control variable would overflow and the expensive key setup wouldn't run at all (zero iterations)
-
+			- The original whitepaper mentions the maximum key length of 56 bytes.
+			  This was a misunderstanding based on the Blowfish maximum recommended key size of 448 bits.
+			  The algorithm can, and does, support up to 72 bytes (e.g. 71 ASCII characters + null terminator).
+			  Note: Variant 2b of bcrypt also *caps* the password length at 72 (to avoid integer wraparound on passwords longer than 2 billion characters O.o)
 	Version 1.04     20150312
 			- Performance improvement: ExpandKey: Hoisted loop variable, use xor to calculate SaltHalfIndex to avoid speculative execution jump, unrolled loop to two 32-bit XORs (16% faster)
 			- Performance improvement (D5,D7): Now use pure pascal version of FastCode Move() (50% faster)
@@ -120,6 +123,7 @@ type
 		class function SelfTestD: Boolean; //different length passwords
 		class function SelfTestE: Boolean; //salt rng
 		class function SelfTestF: Boolean; //correctbatteryhorsestapler
+		class function SelfTestG: Boolean; //check that we support up to 72 characters
 
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 
@@ -138,6 +142,8 @@ type
 
 		class function SelfTest: Boolean;
 	end;
+
+	EBCryptException = class(Exception);
 
 implementation
 
@@ -167,6 +173,7 @@ const
 	}
 
 	BCRYPT_SALT_LEN = 16; //bcrypt uses 128-bit (16-byte) salt (This isn't an adjustable parameter, just a name for a constant)
+	BCRYPT_MaxKeyLen = 72; //72 bytes ==> 71 ansi charcters + null terminator
 
 	BsdBase64EncodeTable: array[0..63] of Char =
 			{ 0:} './'+
@@ -211,6 +218,13 @@ const
 			('~!@#$%^&*()      ~!@#$%^&*()PNBFRD', '$2a$10$LgfYWkbzEvQ4JakH7rOvHe',    '$2a$10$LgfYWkbzEvQ4JakH7rOvHe0y8pHKF9OaFgwUZ2q7W2FFZmZzJYlfS'),
 			('~!@#$%^&*()      ~!@#$%^&*()PNBFRD', '$2a$12$WApznUOJfkEGSmYRfnkrPO',    '$2a$12$WApznUOJfkEGSmYRfnkrPOr466oFDCaj4b6HY3EXGvfxm43seyhgC')
 	);
+
+	SInvalidHashString = 'Invalid base64 hash string';
+	SBcryptCostRangeError = 'BCrypt cost factor must be between 4..31 (%d)';
+	SKeyRangeError = 'Key must be between 1 and 72 bytes long (%d)';
+	SSaltLengthError = 'Salt must be 16 bytes';
+	SInvalidLength = 'Invalid length';
+
 
 {$IFDEF UnitTests}
 type
@@ -325,12 +339,12 @@ begin
 	//pseudo-standard dictates that unicode strings are converted to UTF8 (rather than UTF16, UTF32, UTF16LE, ISO-8859-1, Windows-1252, etc)
 	utf8Password := TBCrypt.WideStringToUtf8(password);
 
-	//key is 56 bytes.
+	//key is 72 bytes.
 	//bcrypt version 2a defines that we include the null terminator
-	//this leaves us with 55 characters we can include
+	//this leaves us with 71 characters we can include
 	len := Length(utf8Password);
-	if len > 55 then
-		len := 55;
+	if len > (BCRYPT_MaxKeyLen-1) then
+		len := BCRYPT_MaxKeyLen-1;
 
 	SetLength(key, len+1); //+1 for the null terminator
 
@@ -396,14 +410,14 @@ const
 begin
 	//Expensive key setup
 	if (cost < 4) or (cost > 31) then
-		raise Exception.Create('Blowfish: Cost ('+IntToStr(Cost)+') must be between 4..31');
+		raise EBCryptException.CreateFmt(SBcryptCostRangeError, [cost]); //'BCrypt cost factor must be between 4..31 (%d)'
 
 	Len := Length(key);
-	if (Len > 56) then
-		raise Exception.Create('Blowfish: Key must be between 1 and 56 bytes long');
+	if (Len > BCRYPT_MaxKeyLen) then //maximum of 72 bytes
+		raise EBCryptException.CreateFmt(SKeyRangeError, [Len]); //'Key must be between 1 and 72 bytes long (%d)'
 
 	if Length(salt) <> BCRYPT_SALT_LEN then
-		raise Exception.Create('Blowfish: salt must be 16 bytes');
+		raise EBCryptException.Create(SSaltLengthError); //'Salt must be 16 bytes'
 
 	//Copy S and P boxes into local state
 	BlowfishInitState(Result);
@@ -434,8 +448,8 @@ var
 begin
 	//ExpandKey phase of the Expensive key setup
 	len := Length(key);
-	if (len > 56) then
-		raise Exception.Create('Blowfish: Key must be between 1 and 56 bytes long');
+	if (len > BCRYPT_MaxKeyLen) then
+		raise EBCryptException.CreateFmt(SKeyRangeError, [len]); //'Key must be between 1 and 72 bytes long (%d)'
 
 	{
 		XOR all the subkeys in the P-array with the encryption key
@@ -590,7 +604,7 @@ begin
 	//TODO: This will fail if the old hash is version 2, and the new version is 2a
 
 	if not TryParseHashString(expectedHashString, {out}version, {out}cost, {out}salt) then
-		raise Exception.Create('Invalid hash string');
+		raise Exception.Create(SInvalidHashString);
 
 	hash := TBCrypt.HashPassword(password, salt, cost);
 
@@ -627,7 +641,7 @@ begin
 		Exit;
 
 	if len > Length(data) then
-		raise Exception.Create('Invalid length');
+		raise EBCryptException.Create(SInvalidLength);
 
 	//encode whole 3-byte chunks  TV4S 6ytw fsfv kgY8 jIuc Drjc 8deX 1s.
 	i := Low(data);
@@ -662,7 +676,8 @@ begin
 			SelfTestC and  //unicode strings
 			SelfTestD and  //different length passwords
 			SelfTestE and  //salt RNG
-			SelfTestF;
+			SelfTestF and  //example of correct horse battery staple
+			SelfTestG;     //72 byte key length (71characters + 1 null = 72)
 end;
 
 class function TBCrypt.FormatPasswordHashForBsd(const cost: Integer; const salt, hash: array of Byte): string;
@@ -715,7 +730,7 @@ begin
 		// Anything less is invalid
 		if (i+1) > len then
 		begin
-			raise Exception.Create('Invalid base64 hash string');
+			raise EBCryptException.Create(SInvalidHashString); //'Invalid base64 hash string'
 //			Break;
 		end;
 
@@ -726,7 +741,7 @@ begin
 
 		if (c1 = -1) or (c2 = -1) then
 		begin
-			raise Exception.Create('Invalid base64 hash string');
+			raise EBCryptException.Create(SInvalidHashString); //'Invalid base64 hash string'
 //			Break;
 		end;
 
@@ -743,7 +758,7 @@ begin
 
 		if (c3 = -1) then
 		begin
-			raise Exception.Create('Invalid base64 hash string');
+			raise EBCryptException.Create(SInvalidHashString); //'Invalid base64 hash string'
 //			Break;
 		end;
 
@@ -760,7 +775,7 @@ begin
 
 		if (c4 = -1) then
 		begin
-			raise Exception.Create('Invalid base64 hash string');
+			raise EBCryptException.Create(SInvalidHashString); //'Invalid base64 hash string'
 //			Break;
 		end;
 
@@ -821,6 +836,8 @@ var
 	encoded: string;
 	data: TBytes;
 	recoded: string;
+const
+	SSelfTestFailed = 'BSDBase64 encoder self-test failed';
 begin
 	for i := Low(TestVectors) to High(TestVectors) do
 	begin
@@ -832,7 +849,7 @@ begin
 
 		recoded := TBCrypt.BsdBase64Encode(data, Length(data));
 		if (recoded <> encoded) then
-			raise Exception.Create('BSDBase64 encoder self-test failed');
+			raise Exception.Create(SSelfTestFailed);
 	end;
 
 	Result := True;
@@ -1020,7 +1037,7 @@ begin
 	for i := 0 to 56 do
 	begin
 		password := Copy('The quick brown fox jumped over the lazy dog then sat on a log', 1, i);
-		hash := TBCrypt.HashPassword(password);
+		hash := TBCrypt.HashPassword(password, 4);
 		if (hash = '') then
 			raise Exception.Create('hash creation failed');
 	end;
@@ -1042,6 +1059,70 @@ end;
 class function TBCrypt.SelfTestF: Boolean;
 begin
 	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km');
+end;
+
+class function TBCrypt.SelfTestG: Boolean;
+var
+	s55: TBytes;
+	s56: TBytes;
+	s57: TBytes;
+	s70: TBytes;
+	s71: TBytes;
+	s72: TBytes;
+	s73: TBytes;
+	sCopy: TBytes;
+	salt: TBytes;
+
+	function BytesEqual(const data1, data2: array of Byte): Boolean;
+	begin
+		Result := True;
+
+		if Length(data1) <> Length(data2) then
+		begin
+			Result := False;
+			Exit;
+		end;
+
+		if Length(data1) = 0 then
+			Exit;
+
+		Result := CompareMem(@data1[0], @data2[0], Length(data1))
+   end;
+const
+	testPassword = 'The quick brown fox jumped over the lazy dog then sat on a log. The sixth sick';
+	//                                                                   56^               ^72                                                      56
+begin
+	Result := True;
+
+	salt := TBCrypt.GenerateSalt;
+
+	s55 := TBCrypt.HashPassword(Copy(testPassword, 1, 55), salt, 4);
+	s56 := TBCrypt.HashPassword(Copy(testPassword, 1, 56), salt, 4);
+	s57 := TBCrypt.HashPassword(Copy(testPassword, 1, 57), salt, 4);
+
+	//First make sure that we can generate the same hash twice with the same password and salt
+	sCopy := TBCrypt.HashPassword(Copy(testPassword, 1, 55), salt, 4);
+	if not BytesEqual(s55, sCopy) then
+		Result := False;
+
+	//The old limit was 56 byte (55 characters + 1 null terminator). Make sure that we can at least handle 57
+	if BytesEqual(s55, s56) then
+		Result := False;
+	if BytesEqual(s56, s57) then
+		Result := False;
+
+	//Finally, do the same test around the 72 character limit. If you specify more than 71 characters, it is cut off
+	s70 := TBCrypt.HashPassword(Copy(testPassword, 1, 70), salt, 4);
+	s71 := TBCrypt.HashPassword(Copy(testPassword, 1, 71), salt, 4);
+	s72 := TBCrypt.HashPassword(Copy(testPassword, 1, 72), salt, 4);
+	s73 := TBCrypt.HashPassword(Copy(testPassword, 1, 73), salt, 4);
+
+	if BytesEqual(s70, s71) then //we should have still had room
+		Result := False;
+	if not BytesEqual(s71, s72) then //stop at 71 characters, in order to keep null terminator
+		Result := False;
+	if not BytesEqual(s72, s73) then //definitely don't overflow into 73
+		Result := False;
 end;
 
 {$IFDEF UnitTests}
