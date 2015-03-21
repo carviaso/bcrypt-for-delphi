@@ -156,7 +156,7 @@ const
 		|------|-------------------|------------|
 		|  8   |    256 iterations |    22.0 ms | <-- minimum allowed by BCrypt
 		|  9   |    512 iterations |    43.3 ms |
-		| 10   |  1,024 iterations |    85.5 ms | <-- current default (BCRYPT_COST=10)
+		| 10   |  1,024 iterations |    85.5 ms | <-- current default (BCRYPT_COST=11)
 		| 11   |  2,048 iterations |   173.3 ms |
 		| 12   |  4,096 iterations |   345.6 ms |
 		| 13   |  8,192 iterations |   694.3 ms |
