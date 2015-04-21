@@ -68,7 +68,8 @@ At the time of publication (1999), the default cost was **6** for a normal user 
 
 Created by [Ian Boyd 5/3/2012](http://stackoverflow.com/a/10441765/9990)
 
-Public Domain
+Public Domain  
+For more information, please refer to <http://unlicense.org/>
 
 **Note**: There is now also [Scrypt for Delphi](https://github.com/JoseJimeniz/scrypt-for-delphi).
 
