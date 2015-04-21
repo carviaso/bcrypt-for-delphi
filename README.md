@@ -52,21 +52,24 @@ The current (3/21/2015) hard-coded default for cost is **11**. This results in 2
 
 3/14/2015  Intel Core i5-2500 CPU @ 3.50 GHz Delphi XE6 (32-bit, Release)
 
-    | Cost | Iterations        |  3/14/2015 |
-    |------|-------------------|------------|
-    |  8   |    256 iterations |    22.0 ms | <-- minimum allowed by BCrypt
-    |  9   |    512 iterations |    43.3 ms |
-    | 10   |  1,024 iterations |    85.5 ms |
-    | 11   |  2,048 iterations |   173.3 ms | <-- current default (BCRYPT_COST=11)
-    | 12   |  4,096 iterations |   345.6 ms |
-    | 13   |  8,192 iterations |   694.3 ms |
-    | 14   | 16,384 iterations | 1,390.5 ms |
-    | 15   | 32,768 iterations | 2,781.4 ms |
-    | 16   | 65,536 iterations | 5,564.9 ms |
-
+| Cost | Iterations        |  Duration  |
+|------|-------------------|------------|
+|  8   |    256 iterations |    22.0 ms | <-- minimum allowed by BCrypt
+|  9   |    512 iterations |    43.3 ms |
+| 10   |  1,024 iterations |    85.5 ms |
+| 11   |  2,048 iterations |   173.3 ms | <-- current default (BCRYPT_COST=11)
+| 12   |  4,096 iterations |   345.6 ms |
+| 13   |  8,192 iterations |   694.3 ms |
+| 14   | 16,384 iterations | 1,390.5 ms |
+| 15   | 32,768 iterations | 2,781.4 ms |
+| 16   | 65,536 iterations | 5,564.9 ms |
 
 At the time of publication (1999), the default cost was **6** for a normal user and **8** for the superuser. 
 
 Created by [Ian Boyd 5/3/2012](http://stackoverflow.com/a/10441765/9990)
 
 Public Domain
+
+**Note**: There is now also [Scrypt for Delphi](https://github.com/JoseJimeniz/scrypt-for-delphi).
+
+
