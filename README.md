@@ -44,8 +44,8 @@ The parts of the string are:
 |-------|---------|-------|
 | 2a | Hash algorithm | "2a" = current version of BCrypt, "2" = obsolete version of BCrypt, "1" = MD5 |
 | 12 | cost factor | Will iterate for 2<sup>12</sup>=4,096 rounds. (Default is 11) |
-| Ro0CUfOqk6cXEKf3dyaM7O | Salt | 22 base64 encoded characters |
-| hSCvnwM9s4wIX9JeLapehKK5YdLxKcm | Hashed password | 31 base64 encoded characters |
+| EA6qjRCeBi8bGgs4rhfn8u | Salt | 22 base64 encoded characters |
+| dEGKmu0ayrZYCEJqf6nNIoytowKFncm | Hashed password | 31 base64 encoded characters |
 
 Because the **cost factor** is stored with the hash output, bcrypt hashes are backwards and forwards compatible with
 	changing the number of rounds. It also makes BCrypt extraordinarily convenient in that a random salt is automatically generated and stored for you (you don't have to worry about storing or retrieving it).
