@@ -25,20 +25,25 @@ Sample Usage
     
 - To verify a password:
 
-        isPasswordValid := TBCrypt.CheckPassword('correct battery horse stapler', expectedHash);
+        passwordRehashNeeded: Boolean;
+        isPasswordValid := TBCrypt.CheckPassword('correct battery horse stapler', expectedHash, {out}passwordRehashNeeded);
+	
+The out parameter `passwordRehashNeeded` indicates if the stored password hash needs to be upgraded. A hash would need to be upgraded if:
 
+- the password hash took less than 250 ms to compute
+- the stored hash version (e.g. `2`, `2x`, `2y`) needs to be upgraded (i.e. `2a`, soon to be `2b`)
 
     
 By convention BCrypt outputs a hash as string such as:
 
-    $2a$11$EA6qjRCeBi8bGgs4rhfn8udEGKmu0ayrZYCEJqf6nNIoytowKFncm
+    $2a$12$EA6qjRCeBi8bGgs4rhfn8udEGKmu0ayrZYCEJqf6nNIoytowKFncm
 
 The parts of the string are:
 
 | Value | Meaning | Notes |
 |-------|---------|-------|
 | 2a | Hash algorithm | "2a" = current version of BCrypt, "2" = obsolete version of BCrypt, "1" = MD5 |
-| 11 | cost factor | Will iterate for 2<sup>11</sup>=2,048 rounds. (Default is 11) |
+| 12 | cost factor | Will iterate for 2<sup>12</sup>=4,096 rounds. (Default is 11) |
 | Ro0CUfOqk6cXEKf3dyaM7O | Salt | 22 base64 encoded characters |
 | hSCvnwM9s4wIX9JeLapehKK5YdLxKcm | Hashed password | 31 base64 encoded characters |
 
