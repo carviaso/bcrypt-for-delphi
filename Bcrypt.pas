@@ -265,7 +265,7 @@ uses
 	ActiveX;
 
 const
-	BCRYPT_COST = 11; //cost determintes the number of rounds. 10 = 2^10 rounds (1024)
+	BCRYPT_COST = 11; //cost determintes the number of rounds. 11 = 2^11 rounds (2,048)
 	{
 		| Cost | Iterations        | E6300        | E5-2620     | i5-2500    | i7-2700K    |
 		|                          |      2006-Q3 |     2012-Q1 |    2011-Q1 |     2011-Q4 |
@@ -1434,7 +1434,7 @@ begin
 				http://preshing.com/20120208/a-look-back-at-single-threaded-cpu-performance/
 				http://preshing.com/images/float-point-perf.png
 	}
-	Result := 0;
+	Result := BCRYPT_COST; //don't ever go less than the default cost
 
 	if not QueryPerformanceFrequency({var}freq) then Exit;
 	if (freq = 0) then Exit;
@@ -1704,7 +1704,7 @@ begin
 
 		durationMS := (t2-t1)/freq * 1000;
 
-		Status(Format('%d	%13.3f', [cost, durationMS]));
+		Status(Format('%d	%.4f', [cost, durationMS]));
 
 		Inc(cost);
 
