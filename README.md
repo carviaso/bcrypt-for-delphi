@@ -78,11 +78,12 @@ Bcrypt variants
 
     The original specification used the prefix `$2$`.
 
-    This was in contrast to the other algorithm prefixes in the OpenBSD password file:
+    This was in contrast to the other algorithm prefixes in the OpenBSD password file, e.g.:
 
     - **`$1$`**: MD5
     - **`$5$`**: SHA-256
     - **`$6$`**: SHA-512
+    
 
 - **$2a$**
 
