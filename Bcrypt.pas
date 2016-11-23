@@ -25,6 +25,10 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/JoseJimeniz/bcrypt-for-delphi)
 
+	Version 1.09     20161122
+			- Added: In accordance with the recommendations of NIST SP 800-63B, we now apply KC normalization to the password.
+						Choice was between NFKC and NFKD; i think compatibility *composition* (rather than decomposition) is better.
+						I don't know if anyone else has any standard yet on which way to go. I made a test to match it.
 	Version 1.08     20161029
 			- We now burn the intermediate UTF8 form of the password.
 			- BCrypt key has a maximum size of 72 bytes. We burn off any excess bytes after converting the string to utf8
@@ -213,6 +217,8 @@ type
 		class function SelfTestF: Boolean; //correctbatteryhorsestapler
 		class function SelfTestG: Boolean; //check that we support up to 72 characters
 		class function SelfTestH: Boolean; //check that we don't limit our passwords to 256 characters (as OpenBSD did)
+		class function SelfTestI: Boolean; //check that we use unicode compatible composition (NFKC) on passwords
+		class function SelfTestJ: Boolean; //check that composed and decomposed strings both validate to the same
 
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 
@@ -360,6 +366,8 @@ type
 		procedure SelfTestF_CorrectBattery; //correctbatteryhorsestapler
 		procedure SelfTestG_PasswordLength; //check that we support up to 72 characters
 		procedure SelfTestH_OpenBSDLengthBug; //check that we don't limit our passwords to 256 characters (as OpenBSD did)
+		procedure SelfTestI_UnicodeCompatibleComposition; //check that we apply KC normalization (NIST SP 800-63B)
+		procedure SelfTestJ_NormalizedPasswordsMatch; //
 
 		procedure Test_ParseHashString; //How well we handle past, present, and future versioning stings
 	end;
@@ -372,7 +380,7 @@ function CryptAcquireContextW(out phProv: THandle; pszContainer: PWideChar; pszP
 function CryptReleaseContext(hProv: THandle; dwFlags: DWORD): BOOL; stdcall; external advapi32;
 function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; stdcall; external advapi32;
 
-procedure BurnString(var s: AnsiString);
+procedure BurnString(var s: UnicodeString);
 begin
 	if Length(s) > 0 then
 	begin
@@ -471,7 +479,6 @@ end;
 class function TBCrypt.HashPassword(const password: UnicodeString; const salt: array of Byte; const cost: Integer): TBytes;
 var
 	key: TBytes;
-	len: Integer;
 begin
 	{ The canonical BSD algorithm expects a null-terminated UTF8 key.
 		If the key is longer than 72 bytes, they truncate the array of bytes to 72.
@@ -1221,8 +1228,14 @@ begin
 	end;
 end;
 
+
+//Requires Vista or newer. Similar functionality existed in Windows 2000 under FoldString
+//function NormalizeString(NormForm: Cardinal; SrcString: PWideChar; SrcLength: Cardinal; DstString: PWideChar; DstLength: Cardinal): Integer; stdcall; external 'Normaliz.dll';
+
 class function TBCrypt.WideStringToUtf8(const Source: UnicodeString): TBytes;
 var
+	normalizedLength: Integer;
+	normalized: UnicodeString;
 	strLen: Integer;
 	dw: DWORD;
 const
@@ -1236,32 +1249,78 @@ begin
 		Exit;
 	end;
 
-	// Determine real size of destination string, in bytes
-	strLen := WideCharToMultiByte(CodePage, 0,
-			PWideChar(Source), Length(Source), //Source
-			nil, 0, //Destination
-			nil, nil);
-	if strLen = 0 then
+	{
+		20161122
+		NIST Special Publication 800-63-3B (Digital Authentication Guideline - Authentication and Lifecycle Management)
+		https://pages.nist.gov/800-63-3/sp800-63b.html
+
+		Reminds us to normalize the string (using either NFKC or NFKD).
+			- Compatibility normalization (K) decomposes ligatures into base compatibilty characters
+
+			- composition (C)   adds character+diacritic into single code point (if possible)
+			- decomposition (D) separates an accented character into the letter and the diacritic
+
+		Nobody has decided on a standard for bcrypt.
+		I've decided that compatible **composition** (NFKC) is what we want:
+
+			Before: Noe¨l
+			After:  Noël
+	}
+
+	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
+//	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);
+	strLen := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), nil, 0);
+	if normalizedLength = 0 then
 	begin
 		dw := GetLastError;
 		raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
 	end;
 
 	// Allocate memory for destination string
-	SetLength(Result, strLen+1); //+1 for the null terminator
+	SetLength(normalized, normalizedLength);
 
-	// Convert source UTF-16 string (WideString) to the destination using the code-page
-	strLen := WideCharToMultiByte(CodePage, 0,
-			PWideChar(Source), Length(Source), //Source
-			PAnsiChar(Result), strLen, //Destination
-			nil, nil);
-	if strLen = 0 then
-	begin
-		dw := GetLastError;
-		raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
+	// Now do it for real
+	try
+//		normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+		normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
+		if strLen = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+		end;
+		//Now perform the conversion of UTF-16 to UTF-8
+
+		// Determine real size of destination string, in bytes
+		strLen := WideCharToMultiByte(CodePage, 0,
+				PWideChar(normalized), normalizedLength, //Source
+				nil, 0, //Destination
+				nil, nil);
+		if strLen = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
+		end;
+
+		// Allocate memory for destination string
+		SetLength(Result, strLen+1); //+1 for the null terminator
+
+		// Convert source UTF-16 string (WideString) to the destination using the code-page
+		strLen := WideCharToMultiByte(CodePage, 0,
+				PWideChar(normalized), normalizedLength, //Source
+				PAnsiChar(Result), strLen, //Destination
+				nil, nil);
+		if strLen = 0 then
+		begin
+			dw := GetLastError;
+			raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
+		end;
+	finally
+		//Burn the intermediate normalized form
+		BurnString(normalized);
 	end;
 
 	//Set the null terminator
+	SetLength(Result, strLen+1); //technically WideCharToMultiByte is allowed to ask for a buffer larger than the final size. It will give us the correct size in the second call
 	Result[strLen] := 0;
 end;
 
@@ -1565,6 +1624,75 @@ begin
 	Result := TBCrypt.CheckPassword(szPassword, '$2a$04$QqpSfI8JYX8HSxNwW5yx8Ohp12sNboonE6e5jfnGZ0fD4ZZwQkOOK', {out}rehashNeeded);
 end;
 
+class function TBCrypt.SelfTestI: Boolean;
+var
+	password: UnicodeString;
+	utf8: TBytes;
+begin
+	{
+		Before: A + ¨ + fi + n
+				A:  U+0041
+				¨:  U+0308 Combining Diaeresis
+				fi: U+FB01 Latin Small Ligature Fi
+				n:  U+006E
+
+		Normalized:  Ä + f + i + n
+				Ä:  U+00C4  Latin Capital Letter A with Diaeresis
+				f:  U+0066
+				i:  U+0069
+				n:  U+006E
+
+		Final UTF-8:
+				Ä:  0xC3 0x84
+				f:  0x66
+				i:  0x69
+				n:  0x6E
+				\0: 0x00
+	}
+	password := 'A' + #$0308 + #$FB01 + 'n';
+
+	utf8 := TBCrypt.WideStringToUtf8(password);
+
+	{
+		0xC3 0x84 0x66 0x69 0x6E 0x00
+	}
+	Result := (Length(utf8) = 6);
+	Result := Result and (utf8[0] = $c3);
+	Result := Result and (utf8[1] = $84);
+	Result := Result and (utf8[2] = $66);
+	Result := Result and (utf8[3] = $69);
+	Result := Result and (utf8[4] = $6e);
+	Result := Result and (utf8[5] = $00); //we do include the null terminator
+end;
+
+class function TBCrypt.SelfTestJ: Boolean;
+var
+	password1: UnicodeString;
+	password2: UnicodeString;
+	hash: string;
+	passwordRehashNeeded: Boolean;
+begin
+	{
+		Original
+				A:  U+0041
+				¨:  U+0308 Combining Diaeresis
+				fi: U+FB01 Latin Small Ligature Fi
+				n:  U+006E
+
+		Normalized:  Ä + f + i + n
+				Ä:  U+00C4  Latin Capital Letter A with Diaeresis
+				f:  U+0066
+				i:  U+0069
+				n:  U+006E
+	}
+	password1 := 'A' + #$0308 + #$FB01 + 'n';
+	password2 := #$00C4 + 'f' + 'i' + 'n';
+
+	hash := TBCrypt.HashPassword(password1, 4);
+
+	Result := TBCrypt.CheckPassword(password2, hash, {out}passwordRehashNeeded);
+end;
+
 class function TBCrypt.PasswordRehashNeeded(const HashString: string): Boolean;
 var
 	idealCost: Integer;
@@ -1756,6 +1884,16 @@ end;
 procedure TBCryptTests.SelfTestH_OpenBSDLengthBug;
 begin
 	CheckTrue(TBCrypt.SelfTestH);
+end;
+
+procedure TBCryptTests.SelfTestI_UnicodeCompatibleComposition;
+begin
+	CheckTrue(TBCrypt.SelfTestI);
+end;
+
+procedure TBCryptTests.SelfTestJ_NormalizedPasswordsMatch;
+begin
+	CheckTrue(TBCrypt.SelfTestJ);
 end;
 
 procedure TBCryptTests.SpeedTests;
