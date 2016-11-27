@@ -27,8 +27,7 @@ unit Bcrypt;
 
 	Version 1.09     20161122
 			- Added: In accordance with the recommendations of NIST SP 800-63B, we now apply KC normalization to the password.
-						Choice was between NFKC and NFKD; i think compatibility *composition* (rather than decomposition) is better.
-						I don't know if anyone else has any standard yet on which way to go. I made a test to match it.
+						Choice was between NFKC and NFKD. SASLprep (rfc4013), like StringPrep (rfc3454) both specified NFKC.
 	Version 1.08     20161029
 			- We now burn the intermediate UTF8 form of the password.
 			- BCrypt key has a maximum size of 72 bytes. We burn off any excess bytes after converting the string to utf8
@@ -207,7 +206,7 @@ type
 		class function BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): string;
 		class function BsdBase64Decode(const s: string): TBytes;
 
-		class function WideStringToUtf8(const Source: UnicodeString): TBytes;
+		class function PasswordStringPrep(const Source: UnicodeString): TBytes;
 
 		class function SelfTestA: Boolean; //known test vectors
 		class function SelfTestB: Boolean; //BSD's base64 encoder/decoder
@@ -219,6 +218,7 @@ type
 		class function SelfTestH: Boolean; //check that we don't limit our passwords to 256 characters (as OpenBSD did)
 		class function SelfTestI: Boolean; //check that we use unicode compatible composition (NFKC) on passwords
 		class function SelfTestJ: Boolean; //check that composed and decomposed strings both validate to the same
+		class function SelfTestK: Boolean; //SASLprep rules for passwords
 
 		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 
@@ -368,6 +368,7 @@ type
 		procedure SelfTestH_OpenBSDLengthBug; //check that we don't limit our passwords to 256 characters (as OpenBSD did)
 		procedure SelfTestI_UnicodeCompatibleComposition; //check that we apply KC normalization (NIST SP 800-63B)
 		procedure SelfTestJ_NormalizedPasswordsMatch; //
+		procedure SelfTestK_SASLprep; //
 
 		procedure Test_ParseHashString; //How well we handle past, present, and future versioning stings
 	end;
@@ -487,7 +488,7 @@ begin
 	}
 
 	//Pseudo-standard dictates that unicode strings are converted to UTF8 (rather than UTF16, UTF32, UTF16LE, ISO-8859-1, Windows-1252, etc)
-	key := TBCrypt.WideStringToUtf8(password);
+	key := TBCrypt.PasswordStringPrep(password);
 	try
 		//Truncate if its longer than 72 bytes (BCRYPT_MaxKeyLen), and burn the excess
 		if Length(key) > BCRYPT_MaxKeyLen then
@@ -1120,6 +1121,10 @@ begin
 	Result := Result and SelfTestF;  //example of correct horse battery staple
 	Result := Result and SelfTestG;  //72 byte key length (71characters + 1 null = 72)
 	Result := Result and SelfTestH;  //check out handling of strings longer than 255 characters
+	Result := Result and SelfTestI;  //check that we use unicode compatible composition (NFKC) on passwords
+	Result := Result and SelfTestJ;  //check that composed and decomposed strings both validate to the same
+	Result := Result and SelfTestK;  //SASLprep rules for passwords
+
 end;
 
 class function TBCrypt.FormatPasswordHashForBsd(const Version: string; const cost: Integer; const salt, hash: array of Byte): string;
@@ -1232,7 +1237,7 @@ end;
 //Requires Vista or newer. Similar functionality existed in Windows 2000 under FoldString
 //function NormalizeString(NormForm: Cardinal; SrcString: PWideChar; SrcLength: Cardinal; DstString: PWideChar; DstLength: Cardinal): Integer; stdcall; external 'Normaliz.dll';
 
-class function TBCrypt.WideStringToUtf8(const Source: UnicodeString): TBytes;
+class function TBCrypt.PasswordStringPrep(const Source: UnicodeString): TBytes;
 var
 	normalizedLength: Integer;
 	normalized: UnicodeString;
@@ -1260,8 +1265,7 @@ begin
 			- composition (C)   adds character+diacritic into single code point (if possible)
 			- decomposition (D) separates an accented character into the letter and the diacritic
 
-		Nobody has decided on a standard for bcrypt.
-		I've decided that compatible **composition** (NFKC) is what we want:
+		SASLprep (rfc4013), like StringPrep (rfc3454) both specified NFKC:
 
 			Before: Noe¨l
 			After:  Noël
@@ -1269,7 +1273,7 @@ begin
 
 	//We use concrete variable for length, because i've seen it return asking for 64 bytes for a 6 byte string
 //	normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), nil, 0);
-	strLen := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), nil, 0);
+	normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), nil, 0);
 	if normalizedLength = 0 then
 	begin
 		dw := GetLastError;
@@ -1283,13 +1287,15 @@ begin
 	try
 //		normalizedLength := NormalizeString(5, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
 		normalizedLength := FoldString(MAP_FOLDCZONE, PWideChar(Source), Length(Source), PWideChar(normalized), Length(normalized));
-		if strLen = 0 then
+		if normalizedLength = 0 then
 		begin
 			dw := GetLastError;
 			raise EConvertError.CreateFmt(SLenError, [dw, SysErrorMessage(dw)]);
 		end;
-		//Now perform the conversion of UTF-16 to UTF-8
 
+		{
+			Now perform the conversion of UTF-16 to UTF-8
+		}
 		// Determine real size of destination string, in bytes
 		strLen := WideCharToMultiByte(CodePage, 0,
 				PWideChar(normalized), normalizedLength, //Source
@@ -1314,14 +1320,13 @@ begin
 			dw := GetLastError;
 			raise EConvertError.CreateFmt(SConvertStringError, [dw, SysErrorMessage(dw)]);
 		end;
+
+		//Set the null terminator
+		Result[strLen] := 0;
 	finally
 		//Burn the intermediate normalized form
 		BurnString(normalized);
 	end;
-
-	//Set the null terminator
-	SetLength(Result, strLen+1); //technically WideCharToMultiByte is allowed to ask for a buffer larger than the final size. It will give us the correct size in the second call
-	Result[strLen] := 0;
 end;
 
 
@@ -1651,7 +1656,7 @@ begin
 	}
 	password := 'A' + #$0308 + #$FB01 + 'n';
 
-	utf8 := TBCrypt.WideStringToUtf8(password);
+	utf8 := TBCrypt.PasswordStringPrep(password);
 
 	{
 		0xC3 0x84 0x66 0x69 0x6E 0x00
@@ -1673,6 +1678,20 @@ var
 	passwordRehashNeeded: Boolean;
 begin
 	{
+		There are four Unicode normalization schemes:
+
+			NFC	Composition
+			NFD	Decomposition
+			NFKC	Compatible Composition   <--- the one we use
+			NFKD	Compatible Decomposition
+
+		NIST Special Publication 800-63-3B (Digital Authentication Guideline - Authentication and Lifecycle Management)
+			says that passwords should have unicode normalization KC or KD applied.
+
+		RFC7613 (SASLprep) specifies the use of NFKC
+			https://tools.ietf.org/html/rfc7613
+			 Preparation, Enforcement, and Comparison of Internationalized Strings Representing Usernames and Passwords
+
 		Original
 				A:  U+0041
 				¨:  U+0308 Combining Diaeresis
@@ -1691,6 +1710,85 @@ begin
 	hash := TBCrypt.HashPassword(password1, 4);
 
 	Result := TBCrypt.CheckPassword(password2, hash, {out}passwordRehashNeeded);
+end;
+
+class function TBCrypt.SelfTestK: Boolean;
+var
+	pass: UnicodeString;
+
+	function CheckUtf8(const s: UnicodeString; Expected: array of Byte): Boolean;
+	var
+		data: TBytes;
+	begin
+		Result := False;
+
+		data := TBCrypt.PasswordStringPrep(s);
+
+		if Length(data) <> Length(Expected) then
+			Exit;
+
+		if not CompareMem(@data[0], @Expected[0], Length(data)) then
+			Exit;
+
+		Result := True;
+	end;
+begin
+	{
+		1. Width-Mapping Rule: Fullwidth and halfwidth characters MUST NOT be mapped to their decomposition mappings
+			(see Unicode Standard Annex #11 [UAX11](https://tools.ietf.org/html/rfc7613#ref-UAX11)).
+	}
+
+	Result := True;
+
+	{
+		Fullwidth "Test"
+
+			U+FF34  FULLWIDTH LATIN CAPITAL LETTER T   UTF8 0xEF 0xBC 0xB4
+			U+FF45  FULLWIDTH LATIN SMALL LETTER   e   UTF8 0xEF 0xBD 0x85
+			U+FF53  FULLWIDTH LATIN SMALL LETTER   s   UTF8 0xEF 0xBD 0x93
+			U+FF54  FULLWIDTH LATIN SMALL LETTER   t   UTF8 0xEF 0xBD 0x94
+	}
+	//pass := #$ff34 + #$ff45 + #$ff53 + #$ff54;
+	//if not CheckUtf8(pass, [$ef, $bc, $b4, $ef, $bd, $85, $bd, $93, $ef, $bd, $94, 0]) then Result := False;
+
+
+	{
+		Halfwidth
+			U+FFC3  HALFWIDTH HANGUL LETTER AE         UTF8 0xEF 0xBF 0x83
+	}
+	//pass := #$ffc3;
+	//if not CheckUtf8(pass, [$ef, $bf, $83, 0]) then Result := False;
+
+
+	{
+		2.  Additional Mapping Rule: Any instances of non-ASCII space MUST be mapped to ASCII space (U+0020);
+			 a non-ASCII space is any Unicode code point having a Unicode general category of "Zs"
+			 (with the  exception of U+0020).
+
+			U+0020	SPACE
+			U+00A0	NO-BREAK SPACE
+			U+1680	OGHAM SPACE MARK
+			U+2000	EN QUAD
+			U+2001	EM QUAD
+			U+2002	EN SPACE
+			U+2003	EM SPACE
+			U+2004	THREE-PER-EM SPACE
+			U+2005	FOUR-PER-EM SPACE
+			U+2006	SIX-PER-EM SPACE
+			U+2007	FIGURE SPACE
+			U+2008	PUNCTUATION SPACE
+			U+2009	THIN SPACE
+			U+200A	HAIR SPACE
+			U+202F	NARROW NO-BREAK SPACE
+			U+205F	MEDIUM MATHEMATICAL SPACE
+			U+3000	IDEOGRAPHIC SPACE
+	}
+	pass := #$0020;
+	if not CheckUtf8(pass, [$20, 0]) then Result := False;
+	pass := #$00A0;
+	if not CheckUtf8(pass, [$20, 0]) then Result := False;
+	pass := #$2000;
+	if not CheckUtf8(pass, [$20, 0]) then Result := False;
 end;
 
 class function TBCrypt.PasswordRehashNeeded(const HashString: string): Boolean;
@@ -1894,6 +1992,11 @@ end;
 procedure TBCryptTests.SelfTestJ_NormalizedPasswordsMatch;
 begin
 	CheckTrue(TBCrypt.SelfTestJ);
+end;
+
+procedure TBCryptTests.SelfTestK_SASLprep;
+begin
+	CheckTrue(TBCrypt.SelfTestK);
 end;
 
 procedure TBCryptTests.SpeedTests;
