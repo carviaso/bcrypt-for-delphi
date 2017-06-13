@@ -102,15 +102,14 @@ Bcrypt variants
 
 - **$2b$** *(February 2014)*
  
-     A bug was discovered in the canonical OpenBSD implemenation of bcrypt.
+     A [bug was discovered](http://undeadly.org/cgi?action=article&sid=20140224132743) in the canonical OpenBSD implemenation of bcrypt.
      
      They were storing the length of their strings in an unsigned char.
      If a password was longer than 255 characters, it would overflow and wrap at 255.
      BCrypt was created for OpenBSD. When they have a bug in *their* library, they decided its ok to bump the version.
      This means that everyone else needs to follow suit if you want to remain current to "their" specification.
      
-	http://undeadly.org/cgi?action=article&sid=20140224132743
-	http://marc.info/?l=openbsd-misc&m=139320023202696    
+     **Bonus Reading**: OpenBSD mailing list item [*"bcrypt version changes"*](http://marc.info/?l=openbsd-misc&m=139320023202696) (2/24/2014)
 
 
 Created by [Ian Boyd 5/3/2012](http://stackoverflow.com/a/10441765/9990)
