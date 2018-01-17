@@ -499,7 +499,8 @@ begin
 
 		Result := TBCrypt.CryptCore(cost, key, salt);
 	finally
-		ZeroMemory(@key[0], Length(key));
+		if Length(key) > 0 then
+			ZeroMemory(@key[0], Length(key));
 	end;
 end;
 
