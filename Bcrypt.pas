@@ -25,6 +25,8 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/JoseJimeniz/bcrypt-for-delphi)
 
+	Version 1.10     201612125
+			- Bugfix: Don't zero out password byte array when it is empty - it's a range check error and unneeded
 	Version 1.09     20161122
 			- Added: In accordance with the recommendations of NIST SP 800-63B, we now apply KC normalization to the password.
 						Choice was between NFKC and NFKD. SASLprep (rfc4013), like StringPrep (rfc3454) both specified NFKC.
@@ -500,7 +502,10 @@ begin
 		Result := TBCrypt.CryptCore(cost, key, salt);
 	finally
 		if Length(key) > 0 then
+		begin
 			ZeroMemory(@key[0], Length(key));
+			SetLength(key, 0);
+		end;
 	end;
 end;
 
