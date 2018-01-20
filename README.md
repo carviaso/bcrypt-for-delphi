@@ -1,12 +1,12 @@
 Bcrypt for Delphi
 ==================
 
-[Bcrypt](http://en.wikipedia.org/wiki/Bcrypt) is an algorithm designed for hashing passwords, and only passwords; i.e. it is:
+[Bcrypt](http://en.wikipedia.org/wiki/Bcrypt) is an algorithm designed for hashing passwords, and only passwords; i.e. it:
 
-- **not** a high-speed, generic, hashing algorithm
-- **not** a key derivation function (see [PBDKF2](http://en.wikipedia.org/wiki/PBKDF2), [scrypt](http://en.wikipedia.org/wiki/Scrypt))
-- computationally and memory expensive
-- limited to passwords of 55 bytes
+- is **not** a high-speed, generic, hashing algorithm
+- is **not** a key derivation function (see [PBDKF2](http://en.wikipedia.org/wiki/PBKDF2), [scrypt](http://en.wikipedia.org/wiki/Scrypt))
+- is computationally and memory expensive
+- is limited to passwords of 55 bytes
 
 It was first [described by Niels Provos and David Mazières in 1999](http://static.usenix.org/events/usenix99/provos/provos.pdf) for OpenBSD.
 
@@ -80,9 +80,9 @@ Bcrypt variants
 
     This was in contrast to the other algorithm prefixes in the OpenBSD password file, e.g.:
 
-    - **`$1$`**: MD5
-    - **`$5$`**: SHA-256
-    - **`$6$`**: SHA-512
+    - **`$1$`**: [MD5](https://en.wikipedia.org/wiki/MD5)
+    - **`$5$`**: [SHA2](https://en.wikipedia.org/wiki/SHA-2)-256
+    - **`$6$`**: [SHA2](https://en.wikipedia.org/wiki/SHA-2)-512
     
 
 - **$2a$**
@@ -117,6 +117,6 @@ Created by [Ian Boyd 5/3/2012](http://stackoverflow.com/a/10441765/9990)
 Public Domain  
 For more information, please refer to <http://unlicense.org/>
 
-**Note**: There is now also [Scrypt for Delphi](https://github.com/JoseJimeniz/scrypt-for-delphi).
+**Note**: There is also [Scrypt for Delphi](https://github.com/JoseJimeniz/scrypt-for-delphi).
 
 
