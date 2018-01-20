@@ -25,7 +25,9 @@ unit Bcrypt;
 	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
 	Subsequently hosted on GitHub (https://github.com/JoseJimeniz/bcrypt-for-delphi)
 
-	Version 1.10     201612125
+	Version 1.11     20180120
+			- Bugfix: The raw version of CheckPassword forgot to time the hash operation, and set PasswordRehashNeeded out parameter approriately
+	Version 1.10     20161212
 			- Bugfix: Don't zero out password byte array when it is empty - it's a range check error and unneeded
 	Version 1.09     20161122
 			- Added: In accordance with the recommendations of NIST SP 800-63B, we now apply KC normalization to the password.
@@ -373,6 +375,8 @@ type
 		procedure SelfTestK_SASLprep; //
 
 		procedure Test_ParseHashString; //How well we handle past, present, and future versioning stings
+
+		procedure Test_ManualSystem;
 	end;
 {$ENDIF}
 
@@ -923,16 +927,29 @@ class function TBCrypt.CheckPassword(const password: UnicodeString; const salt, 
 var
 	candidateHash: TBytes;
 	len: Integer;
+	freq, t1, t2: Int64;
 begin
 	Result := False;
+	PasswordRehashNeeded := False;
+
+	if not QueryPerformanceFrequency({var}freq) then
+		freq := -1; //avoid a division by zero
+
+	//Measure how long it takes to run the hash. If it's too quick, it's time to increase the cost
+	if not QueryPerformanceCounter(t1) then t1 := 0;
 
 	candidateHash := TBCrypt.HashPassword(password, salt, cost);
+
+	if not QueryPerformanceCounter(t2) then t2 := 0;
 
 	len := Length(hash);
 	if Length(candidateHash) <> len then
 		Exit;
 
 	Result := CompareMem(@candidateHash[0], @hash[0], len);
+
+	//Based on how long it took to hash the password, see if a rehash is needed to increase the cost
+	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
 end;
 
 {$IFDEF COMPILER_7_DOWN}
@@ -1045,6 +1062,7 @@ begin
 	if not TryParseHashString(expectedHashString, {out}version, {out}cost, {out}salt) then
 		raise Exception.Create(SInvalidHashString);
 
+	//Measure how long it takes to run the hash. If it's too quick, it's time to increase the cost
 	if not QueryPerformanceCounter(t1) then t1 := 0;
 
 	hash := TBCrypt.HashPassword(password, salt, cost);
@@ -2053,6 +2071,29 @@ begin
 	TimeIt(16);
 //OutputDebugString('SAMPLING OFF');
 //	TimeIt(17);
+end;
+
+procedure TBCryptTests.Test_ManualSystem;
+var
+	salt: TBytes;
+	hash: TBytes;
+	password: string;
+	validPassword: Boolean;
+	passwordRehashNeeded: Boolean;
+begin
+	{
+		Normally bcrypt hashes to an OpenBSD password-file compatible string (i.e. $2b$...)
+		But if you want to handle the salt, and hash bytes directly, and come up with your own serialization format
+		you can do that too
+	}
+	password := 'correct horse battery staple';
+	salt := TBCrypt.GenerateSalt;
+
+	hash := TBCrypt.HashPassword(password, salt, 4); //4 is the lowest cost we'll accept
+
+	validPassword := TBCrypt.CheckPassword(password, salt, hash, 4, {out}passwordRehashNeeded);
+	CheckTrue(validPassword);
+	CheckTrue(passwordRehashNeeded, 'Expected passwordRehashNeede to be true, given that we used a cost of 4');
 end;
 
 procedure TBCryptTests.Test_ParseHashString;
