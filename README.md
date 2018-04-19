@@ -69,7 +69,18 @@ The current (3/21/2015) hard-coded default for cost is **11**. This results in 2
 | 15   | 32,768 iterations | 2,781.4 ms |
 | 16   | 65,536 iterations | 5,564.9 ms |
 
-At the time of publication (1999), the default cost was **6** for a normal user and **8** for the superuser. 
+
+At the time of publication of BCrypt (1999) the default costs were:
+
+- Normal User: 6
+- the Superuser: 8
+
+> *"Of course, whatever cost people choose should be reevaluated from time to time."*
+
+- At the time of deployment in 1976, **crypt** could hash fewer than 4 passwords per second. (250 ms per password)  
+- In 1977, on a VAX-11/780, crypt (MD5) could be evaluated about 3.6 times per second.   (277 ms per password)
+
+We want to target between 250-500 ms per hash. To that end, when calling `HashPassword` the system will automatically determine a cost factor that results in a hash that takes 250-500 ms to compute. It does this by profiling the computer performance. Regardless of the results of the profiling, it will never use a cost lower than the `BCRYPT_COST` constant.
 
 Bcrypt variants
 -------------
