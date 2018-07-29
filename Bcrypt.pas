@@ -1,11 +1,20 @@
 unit Bcrypt;
 
-{
+(*
 	Sample Usage
 	============
 
-		hash := TBCrypt.HashPassword('p@ssword1');     //hash using default cost (11)
-		hash := TBCrypt.HashPassword('p@ssword1', 14); //hash using custom cost factor of 14
+		//Hash a password using default cost (e.g. 11 ==> 2^11 ==> 2,048 rounds)
+		hash := TBCrypt.HashPassword('p@ssword1');
+
+		//Hash a password using custom cost factor
+		hash := TBCrypt.HashPassword('p@ssword1', 14); //14 ==> 2^14 ==> 16,384 rounds
+
+		//Check a password
+		var
+			passwordRehashNeeded: Boolean;
+
+		TBCrypt.CheckPassword(szPassword, existingHash, {out}passwordRehashNeeded);
 
 	Remarks
 	=======
@@ -22,9 +31,10 @@ unit Bcrypt;
 	It uses the Blowfish encryption algorithm, but with an "expensive key setup" modification,
 	contained in the function EksBlowfishSetup.
 
-	Initially posted to Stackoverflow (http://stackoverflow.com/a/10441765/12597)
-	Subsequently hosted on GitHub (https://github.com/JoseJimeniz/bcrypt-for-delphi)
 
+
+	Version 1.13     20180729
+			- UIntPtr isn't declared in Delphi 2010 (21.0). Maybe it first appeared in Delphi XE (22.0)?
 	Version 1.12     20180419
 			- Made compatible with Delphi 5
 			- Published all self tests, but put slow ones behind the -SlowUnitTests command line parameter
@@ -146,49 +156,54 @@ unit Bcrypt;
 		This means that everyone else needs to follow suit if you want to remain current to "their" specification.
 		http://undeadly.org/cgi?action=article&sid=20140224132743
 		http://marc.info/?l=openbsd-misc&m=139320023202696
-}
+*)
 
 interface
 
 (*
-	The problem is how to make "TBytes" and "UnicodeString" work in Delphi 5, Delphi 7, and XE2+
+	The problem is how to make "TBytes", "UIntPtr", and "UnicodeString" work in Delphi 5, Delphi 7, Delphi 2010, and XE2+
 
-	| Item            | Delphi 5        | Delphi 7              | Delphi XE2             |
-	|-----------------|-----------------|-----------------------|------------------------|
-	| Version         | VER130          | VER150                | VER230                 |
-	| CompilerVersion | 5               | 7                     | 16                     |
-	| TBytes          | = array of Byte | = Types.TByteDynArray | = SysUtils.TBytes      |
-	| UnicodeString   | = WideString    | = WideString          | = System.UnicodeString |
-	| UIntPtr         | = Cardinal      | = Cardinal            | = System.UIntPtr       |
+	| Item            | Delphi 5        | Delphi 7              | Delphi 2009            | Delphi 2010            | Delphi XE2             |
+	|-----------------|-----------------|-----------------------|------------------------|------------------------|------------------------|
+	| Product version | 5               | 7                     | 12                     | 14                     | 16                     |
+	| Version         | VER130          | VER150                | VER200                 | VER210                 | VER230                 |
+	| CompilerVersion | n/a             | 15.0                  | 20.0                   | 21.0                   | 23.0                   |
+	| TBytes          | = array of Byte | = Types.TByteDynArray | = Types.TByteDynArray? | = Types.TByteDynArray? | = SysUtils.TBytes      |
+	| UnicodeString   | = WideString    | = WideString          | = System.UnicodeString | = System.UnicodeString | = System.UnicodeString | Added in Delphi 2009
+	| UIntPtr         | = Cardinal      | = Cardinal            | = Cardinal             | = Cardinal             | = System.UIntPtr       |
 
-	And it wassn't until Delphi 6 that conditional expressions were added
+	And it wasn't until Delphi 6 (CompilerVersion >= 14.0) that conditional expressions (CONDITIONALEXPRESSIONS) were added.
 *)
-{$IFDEF VER150}
-	{$DEFINE COMPILER_7}
-	{$DEFINE COMPILER_7_DOWN}
-{$ENDIF}
-{$IFDEF VER130}
-	{$DEFINE COMPILER_5}
-	{$DEFINE COMPILER_7_DOWN}
+{$IFDEF CONDITIONALEXPRESSIONS}
+	{$IF CompilerVersion >= 22}
+		{$DEFINE COMPILER_15_UP} //Delphi XE
+	{$IFEND}
+	{$IF CompilerVersion >= 15}
+		{$DEFINE COMPILER_7_UP} //Delphi 7
+	{$IFEND}
 {$ENDIF}
 
 uses
 	SysUtils, Windows, Math,
-	{$IFDEF COMPILER_7}Types,{$ENDIF} //Types.pas didn't appear until ~Delphi 7.
+	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until ~Delphi 7.
 	ComObj;
 
 type
 {$IFNDEF UNICODE}
-	UnicodeString = WideString; //System.UnicodeString wasn't added until around XE2
+	UnicodeString = WideString; //System.UnicodeString wasn't added until Delphi 2009
 {$ENDIF}
 
-{$IFDEF COMPILER_7}
+{$IFDEF VER150} //Delphi 7
 	TBytes = Types.TByteDynArray; //TByteDynArray wasn't added until around Delphi 7. Sometime later it moved to SysUtils.
 {$ENDIF}
-{$IFDEF COMPILER_5}
+
+{$IFDEF VER130} //Delphi 5
 	TBytes = array of Byte; //for old-fashioned Delphi 5, we have to do it ourselves
 {$ENDIF}
-{$IFDEF COMPILER_7_DOWN}
+
+{$IFNDEF COMPILER_15_UP}
+	//Someone said that Delphi 2010 (Delphi 14) didn't have UIntPtr.
+	//So maybe it was Delphi XE (Delphi 15)
 	UIntPtr = Cardinal; //an unsigned, pointer sized, integer
 {$ENDIF}
 
@@ -384,7 +399,7 @@ type
 		procedure SelfTestJ_NormalizedPasswordsMatch; //
 		procedure SelfTestK_SASLprep; //
 
-		procedure Test_ParseHashString; //How well we handle past, present, and future versioning stings
+		procedure Test_ParseHashString; //How well we handle past, present, and future versioning strings
 
 		procedure Benchmark;
 		procedure Test_ManualSystem;
@@ -969,7 +984,7 @@ begin
 	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
 end;
 
-{$IFDEF COMPILER_7_DOWN}
+{$IFNDEF UNICODE}
 function CharInSet(C: Char; const CharSet: TSysCharSet): Boolean;
 begin
   Result := C in CharSet;
