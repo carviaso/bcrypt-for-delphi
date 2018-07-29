@@ -32,12 +32,9 @@ unit Bcrypt;
 	contained in the function EksBlowfishSetup.
 
 
-<<<<<<< HEAD
 
 	Version 1.13     20180729
 			- UIntPtr isn't declared in Delphi 2010 (21.0). Maybe it first appeared in Delphi XE (22.0)?
-=======
->>>>>>> origin/master
 	Version 1.12     20180419
 			- Made compatible with Delphi 5
 			- Published all self tests, but put slow ones behind the -SlowUnitTests command line parameter
@@ -1673,15 +1670,9 @@ begin
 	{
 		Validate a known password hash
 	}
-<<<<<<< HEAD
 	//OutputDebugString('SAMPLING ON');
 	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km', {out}rehashNeeded);
 	//OutputDebugString('SAMPLING OFF');
-=======
-	OutputDebugString('SAMPLING ON');
-	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km', {out}rehashNeeded);
-	OutputDebugString('SAMPLING OFF');
->>>>>>> origin/master
 end;
 
 class function TBCrypt.SelfTestG: Boolean;
