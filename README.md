@@ -82,6 +82,8 @@ At the time of publication of BCrypt (1999) the default costs were:
 
 We want to target between 250-500 ms per hash. To that end, when calling `HashPassword` the system will automatically determine a cost factor that results in a hash that takes 250-500 ms to compute. It does this by profiling the computer performance. Regardless of the results of the profiling, it will never use a cost lower than the `BCRYPT_COST` constant.
 
+![Speedtest results](https://github.com/JackTrapper/bcrypt-for-delphi/blob/master/CalculationTimes.PNG)
+
 Bcrypt variants
 -------------
 
