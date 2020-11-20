@@ -5,10 +5,10 @@ unit Bcrypt;
 	============
 
 		//Hash a password using default cost (e.g. 11 ==> 2^11 ==> 2,048 rounds)
-		hash := TBCrypt.HashPassword('hunter2');
+		hash := TBCrypt.HashPassword('correct horse battery staple');
 
 		//Hash a password using custom cost factor
-		hash := TBCrypt.HashPassword('hunter2', 14); //14 ==> 2^14 ==> 16,384 rounds
+		hash := TBCrypt.HashPassword('correct horse battery staple', 14); //14 ==> 2^14 ==> 16,384 rounds
 
 		//Check a password
 		var
@@ -22,11 +22,13 @@ unit Bcrypt;
 
 	Enhanced mode pre-hashes the password with SHA2-256. This gives two benfits:
 
-	- overcomes the 72-byte limit on passwords; allowing them to be arbitrary long
-	- avoids potential denial of service with really long passwords
+		- overcomes the 72-byte limit on passwords; allowing them to be arbitrary long
+		- avoids potential denial of service with really long passwords
+
+	It is essentially: HashPassword(base64(sha256(password)))
 
 		// Hash password with SHA256 prehash:
-		hash := TBCrytpt.EnhancedHashPassword('hunter2'); // $bcrypt-sha256$
+		hash := TBCrytpt.EnhancedHashPassword('correct horse battery staple'); // $bcrypt-sha256$
 
 		// Check enhanced password the same way as regular hashes
 		isPasswordValid := TBCrypt.CheckPassword(szPassword, existingHash, {out}passwordRehashNeeded);
@@ -189,6 +191,33 @@ unit Bcrypt;
 		This means that everyone else needs to follow suit if you want to remain current to "their" specification.
 		http://undeadly.org/cgi?action=article&sid=20140224132743
 		http://marc.info/?l=openbsd-misc&m=139320023202696
+
+	BCrypt strength
+	===============
+
+	scrypt is weaker than bcrypt for memory requirements less than 4 MB. Stick with at least 16 MB.
+
+		https://blog.ircmaxell.com/2014/03/why-i-dont-recommend-scrypt.html#Putting-It-In-Perspective
+
+		To put it in perspective, scrypt requires approximately 1000 times the memory
+		of bcrypt to achieve a comparable level of defense against GPU based attacks
+		(again, for password storage). On one hand, that's still fine, as bcrypt
+		uses 4KB, which means the equivalent effective scrypt protection occurs at
+		4MB. And considering the recommended settings are in the 16MB range, that
+		should be clear that scrypt is definitively stronger than bcrypt.
+
+		This proves that scrypt is demonstrably weaker than bcrypt for password
+		storage when using memory settings under 4mb. This is why the recommendations
+		are 16mb or higher. If you're using 16+mb of memory in scrypt (p=1, r=8 and
+		N=2^14, or p=1, r=1 and N=17), you are fine.
+
+	Argon2 is weaker than bcrypt for run times less than 1 second. (i.e. for authentication)
+
+		https://twitter.com/jmgosney/status/1111865772656246786
+
+		Actually, bcrypt is stronger than Argon2 for authentication (target runtime < 500ms.)
+		Argon2 does not match or surpass bcrypt's strength until >= ~1000ms runtimes (KDF.)
+		So "Use Argon2" is not a good one-size-fits-all answer.
 *)
 
 interface
@@ -243,8 +272,8 @@ type
 	TBlowfishData= record
 		InitBlock: array[0..7] of Byte;    { initial IV }
 		LastBlock: array[0..7] of Byte;    { current IV }
-		SBox: array[0..3, 0..255] of DWORD;
-		PBoxM: array[0..17] of DWORD;
+		SBox: array[0..3, 0..255] of DWORD; //4 SBoxes
+		PBox: array[0..17] of DWORD; //18 subkeys
 	end;
 
 	TBCrypt = class(TObject)
@@ -438,7 +467,7 @@ const
 	--------
 
 	Bcrypt-SHA256 is compatible with the Modular Crypt Format, and uses $bcrypt-sha256$ as the identifying prefix for all
-	it’s strings. An example hash (of password) is:
+	its strings. An example hash (of password) is:
 
 		$bcrypt-sha256$2a,12$LrmaIX5x4TRtAwEfwJZa1.$2ehnw6LvuIUTM0iz4iz9hTxv21B6KFO
 
@@ -461,7 +490,7 @@ const
 	The algorithm this hash uses is as follows:
 
 		- first the password is encoded to UTF-8 if not already encoded.
-		- then it’s run through SHA2-256 to generate a 32 byte digest.
+		- then it's run through SHA2-256 to generate a 32 byte digest.
 		- this is encoded using base64, resulting in a 44-byte result (including the trailing padding =).
 			For the example "password", the output from this stage would be "XohImNooBHFR0OVvjcYpJ3NgPQ1qq73WKhHvch0VQtg=".
 		- this base64 string is then passed on to the underlying bcrypt algorithm as the new password to be hashed.
@@ -702,6 +731,10 @@ type
 	TSBox = array[0..255] of DWORD;
 	PSBox = ^TSBox;
 
+{
+	Encrypt a single 64-bit block encoded as two 32-bit halves.
+	InData: Pointer to two
+}
 procedure BlowfishEncryptECB(const Data: TBlowfishData; InData: PLongWord; OutData: PLongWord);
 var
 	xL, xR: LongWord;
@@ -713,31 +746,31 @@ begin
 	xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
 	xR := (xR shr 24) or ((xR shr 8) and $FF00) or ((xR shl 8) and $FF0000) or (xR shl 24);
 
-	xL := xL xor Data.PBoxM[0];
+	xL := xL xor Data.PBox[0];
 
 	S0 := @Data.SBox[0];
 	S1 := @Data.SBox[1];
 	S2 := @Data.SBox[2];
 	S3 := @Data.SBox[3];
 
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[ 1];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[ 2];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[ 3];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[ 4];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[ 5];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[ 6];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[ 7];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[ 8];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[ 9];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[10];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[11];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[12];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[13];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[14];
-	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBoxM[15];
-	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBoxM[16];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[ 1];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[ 2];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[ 3];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[ 4];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[ 5];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[ 6];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[ 7];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[ 8];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[ 9];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[10];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[11];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[12];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[13];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[14];
+	xR := xR xor (((S0[(xL shr 24)] + S1[Byte(xL shr 16)]) xor S2[Byte(xL shr 8)]) + S3[Byte(xL)]) xor Data.PBox[15];
+	xL := xL xor (((S0[(xR shr 24)] + S1[Byte(xR shr 16)]) xor S2[Byte(xR shr 8)]) + S3[Byte(xR)]) xor Data.PBox[16];
 
-	xR := xR xor Data.PBoxM[17];
+	xR := xR xor Data.PBox[17];
 
 	//Copy xL,xR to output buffer
 	xL := (xL shr 24) or ((xL shr 8) and $FF00) or ((xL shl 8) and $FF0000) or (xL shl 24);
@@ -762,6 +795,9 @@ var
 const
 	magicText: AnsiString = 'OrpheanBeholderScryDoubt'; //the 24-byte data we will be encrypting 64 times
 begin
+{
+	The output of bcrypt is 24-bytes, the result of encrypting "OrpheanBeholderScryDoubt" (24-characters) 64 times.
+}
 {$IFDEF Sqm}
 	t1 := Sqm.GetTimestamp;
 {$ENDIF}
@@ -808,12 +844,23 @@ var
 const
 	zero: array[0..15] of Byte = (0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0);
 
-	//SBLOCKS ARE THE HEX DIGITS OF PI.
-	//The amount of hex digits can be increased if you want to experiment with more rounds and longer key lengths
+	{
+		P subkeys and Substitution Boxes (SBoxes) are the hex (base-16) fractional digits of PI:
+
+				3.243f6a88 85a308d3 13198a2e 03707344 a4093822 299f31d0 082efa98 ec4e6c89 452821e6 38d01377 be5466cf 34e90c6c c0ac29b7 c97c50dd 3f84d5b5 b5470917 9216d5d9 8979fb1b
+				  d1310ba6 98dfb5ac 2ffd72db d01adfb7 b8e1afed 6a267e96 ba7c9045 f12c7f99 24a19947 b3916cf7 0801f2e2 858efc16 636920d8 71574e69 a458fea3 f4933d7e 0d95748f 728eb658
+				  718bcd58 82154aee 7b54a41d c25a59b5 9c30d539 2af26013 c5d1b023 286085f0 ca417918 b8db38ef 8e79dcb0 603a180e 6c9e0e8b b01e8a3e d71577c1 bd314b27 78af2fda 55605c60
+				  e65525f3 aa55ab94 57489862 63e81440 55ca396a 2aab10b6 b4cc5c34 1141e8ce a15486af 7c72e993 b3ee1411 636fbc2a 2ba9c55d 741831f6 ce5c3e16 9b87931e afd6ba33 6c24cf5c
+				  7a325381 28958677 3b8f4898 6b4bb9af c4bfe81b 66282193 61d809cc fb21a991 487cac60 5dec8032 ef845d5d e98575b1 dc262302 eb651b88 23893e81 d396acc5 0f6d6ff3 83f44239
+				  2e0b4482 a4842004 69c8f04a 9e1f9b5e 21c66842 f6e96c9a 670c9c61 abd388f0 6a51a0d2 d8542f68 960fa728 ab5133a3 6eef0b6c 137a3be4 ba3bf050 7efb2a98 a1f1651d 39af0176
+				  66ca593e 82430e88 8cee8619 456f9fb4 7d84a5c3 3b8b5ebe e06f75d8 85c12073 401a449f 56c16aa6 4ed3aa62 363f7706 1bfedf72 429b023d 37d0d724 d00a1248 db0fead3 p0......
+
+		The amount of hex digits can be increased if you want to experiment with more rounds and longer key lengths.
+	}
 	PBox: array[0..17] of DWORD = (
-			$243f6a88, $85a308d3, $13198a2e, $03707344, $a4093822, $299f31d0,
-			$082efa98, $ec4e6c89, $452821e6, $38d01377, $be5466cf, $34e90c6c,
-			$c0ac29b7, $c97c50dd, $3f84d5b5, $b5470917, $9216d5d9, $8979fb1b);
+				$243f6a88, $85a308d3, $13198a2e, $03707344, $a4093822, $299f31d0,
+				$082efa98, $ec4e6c89, $452821e6, $38d01377, $be5466cf, $34e90c6c,
+				$c0ac29b7, $c97c50dd, $3f84d5b5, $b5470917, $9216d5d9, $8979fb1b);
 
 	SBox0: array[0..255] of DWORD = (
 				$d1310ba6, $98dfb5ac, $2ffd72db, $d01adfb7, $b8e1afed, $6a267e96, $ba7c9045, $f12c7f99,
@@ -964,13 +1011,13 @@ begin
 	Move(SBox1, Result.SBox[1], Sizeof(SBox1));
 	Move(SBox2, Result.SBox[2], Sizeof(SBox2));
 	Move(SBox3, Result.SBox[3], Sizeof(SBox3));
-	Move(PBox, Result.PBoxM, Sizeof(PBox));
+	Move(PBox, Result.PBox, Sizeof(PBox));
 
+	//This is the normal Blowfish state setup
 	Self.ExpandKey({var} Result, salt, key);
 
-	//rounds = 2^cost
-	rounds := 1 shl cost;
-
+	//This is the "Expensive" part of the "Expensive Key Setup"
+	rounds := 1 shl cost; //rounds = 2^cost
 	for i := 1 to rounds do
 	begin
 		Self.ExpandKey({var} Result, zero, key);
@@ -1046,19 +1093,20 @@ end;
 
 type
 	TBlowfishBlock = packed record
-		Lo: LongWord;
-		Hi: LongWord;
+		Lo: UInt32;
+		Hi: UInt32;
 	end;
 	PBlowfishBlock = ^TBlowfishBlock;
 
 class procedure TBCrypt.ExpandKey(var State: TBlowfishData; const salt, key: array of Byte);
 var
-	i, j, k: Integer;
-	A: DWord;
-	KeyB: PByteArray;
-	block: array[0..7] of Byte;
+	i, j: Integer;
+	keyOffset: Integer;
+	A: Cardinal;
+	keyB: PByteArray;
+	block	: array[0..7] of Byte;
 	//block: TBlowfishBlock;
-	len: Integer;
+	keyLen: Integer;
 	//saltHalf: Integer;
 	saltHalfIndex: Integer;
 begin
@@ -1068,37 +1116,39 @@ begin
 	//TODO: burn all stack variables
 
 	//ExpandKey phase of the Expensive key setup
-	len := Length(key);
-	if (len > BCRYPT_MaxKeyLen) then
-		raise EBCryptException.CreateFmt(SKeyRangeError, [len]); //'Key must be between 1 and 72 bytes long (%d)'
+	keyLen := Length(key);
+	if (keyLen < 1) or (keyLen > BCRYPT_MaxKeyLen) then
+		raise EBCryptException.CreateFmt(SKeyRangeError, [keyLen]); //'Key must be between 1 and 72 bytes long (%d)'
 
 	{
-		XOR all the subkeys in the P-array with the encryption key
-		The first 32 bits of the key are XORed with P1, the next 32 bits with P2, and so on.
+		XOR all the subkeys in the P-array with the encryption key.
+			- The first 32 bits of the key are XORed with P1,
+			- the next 32 bits with P2,
+			- and so on.
+
 		The key is viewed as being cyclic; when the process reaches the end of the key,
 		it starts reusing bits from the beginning to XOR with subkeys.
 	}
-	if len > 0 then
+	keyB := PByteArray(@key[0]); //access to key-array without bounds checking
+	keyOffset := 0;
+	for i := 0 to 17 do
 	begin
-		KeyB := PByteArray(@key[0]);
-		k := 0;
-		for i := 0 to 17 do
-		begin
-			A :=      KeyB[(k+3) mod len];
-			A := A + (KeyB[(k+2) mod len] shl 8);
-			A := A + (KeyB[(k+1) mod len] shl 16);
-			A := A + (KeyB[k]             shl 24);
-			State.PBoxM[i] := State.PBoxM[i] xor A;
-			k := (k+4) mod len;
-		end;
+		//Next the next 4-bytes of the key as a UInt32 - making sure to wrap around the end of the key array
+		A :=      (keyB[(keyOffset  )           ] shl 24);
+		A := A or (keyB[(keyOffset+1) mod keyLen] shl 16);
+		A := A or (keyB[(keyOffset+2) mod keyLen] shl  8);
+		A := A or (keyB[(keyOffset+3) mod keyLen]       );
+		keyOffset := (keyOffset+4) mod keyLen;
+
+		State.PBox[i] := State.PBox[i] xor A;
 	end;
 
 	//Blowfish-encrypt the first 64 bits of the salt argument using the current state of the key schedule.
 	BlowfishEncryptECB(State, PLongWord(@salt[0]), PLongWord(@block));
 
 	//The resulting ciphertext replaces subkeys P1 and P2.
-	State.PBoxM[0] := Block[3] + (Block[2] shl 8) + (Block[1] shl 16) + (Block[0] shl 24);
-	State.PBoxM[1] := Block[7] + (Block[6] shl 8) + (Block[5] shl 16) + (Block[4] shl 24);
+	State.PBox[0] := (block[0] shl 24) or (block[1] shl 16) or (block[2] shl 8) or block[3];
+	State.PBox[1] := (block[4] shl 24) or (block[5] shl 16) or (block[6] shl 8) or block[7];
 
 {$RANGECHECKS OFF}
 	saltHalfIndex := 8;
@@ -1107,6 +1157,7 @@ begin
 		//That same ciphertext is also XORed with the second 64-bits of salt
 
 		//Delphi compiler is not worth its salt; it doesn't do hoisting ("Any compiler worth its salt will hoist" - Eric Brumer C++ compiler team)
+		//[Build 2013 Native Code Performance and Memory The Elephant in the CPU](https://youtu.be/kUpKE2F2lHc?t=1295)
 		//Salt is 0..15 (0..7 is first block, 8..15 is second block)
 		PLongWord(@block[0])^ := PLongWord(@block[0])^ xor PLongWord(@salt[saltHalfIndex  ])^;
 		PLongWord(@block[4])^ := PLongWord(@block[4])^ xor PLongWord(@salt[saltHalfIndex+4])^;
@@ -1120,8 +1171,8 @@ begin
 		BlowfishEncryptECB(State, @block, @block);
 
 		// The output of the second encryption replaces subkeys P3 and P4. (P[2] and P[3])
-		State.PBoxM[i*2+0] := LongWord(block[3]) or (block[2] shl 8) or (block[1] shl 16) or (block[0] shl 24);
-		State.PBoxM[i*2+1] := LongWord(block[7]) or (block[6] shl 8) or (block[5] shl 16) or (block[4] shl 24);
+		State.PBox[i*2+0] := LongWord(block[3]) or (block[2] shl 8) or (block[1] shl 16) or (block[0] shl 24);
+		State.PBox[i*2+1] := LongWord(block[7]) or (block[6] shl 8) or (block[5] shl 16) or (block[4] shl 24);
 	end;
 
 	//When ExpandKey finishes replacing entries in the P-Array, it continues on replacing S-box entries two at a time.
@@ -1466,6 +1517,13 @@ begin
 		[cost]:    12
 		[salt]:    22 characters base64
 		[hash]:    31 characters hash
+
+	https://passlib.readthedocs.io/en/stable/lib/passlib.hash.bcrypt_sha256.html#format
+
+	Bcrypt-SHA256 is compatible with the Modular Crypt Format,
+	and uses $bcrypt-sha256$ as the identifying prefix for all it's strings.
+
+	Version 1 of this format had the format $bcrypt-sha256$type,rounds$salt$digest.
 }
 	saltString := BsdBase64Encode(salt, Length(salt));
 	hashString := BsdBase64Encode(hash, Length(hash)-1); //Yes, everything except the last byte.
@@ -1473,6 +1531,21 @@ begin
 		//Nobody knows why, but that's what all existing tests do - so it's what i do
 
 	Result := Format('$bcrypt-sha256$%s,%d$%s$%s', [Version, cost, saltString, hashString]);
+
+{
+	https://twitter.com/TychoTithonus/status/1155490788303749120
+
+	I propose new shorthand for this workaround for bcrypt's 72-char limit:
+
+		 bcrypt(base64(raw_sha256($pass)))
+
+	We should just declare this to be  a new bcrypt variant, and call it $2s$ (for bcrypt+sha2).
+
+	Ref Python lib:
+		https://passlib.readthedocs.io/en/stable/lib/passlib.hash.bcrypt_sha256.html#algorithm
+
+	Next: a ref PHP example?
+}
 end;
 
 class function TBCrypt.FormatPasswordHashForBsd(const Version: string; const cost: Integer; const salt, hash: array of Byte): string;
@@ -2746,7 +2819,7 @@ begin
 	CheckTrue(bRes);
 
 	CheckEquals('2a', version);
-   CheckEquals(12, cost);
+	CheckEquals(12, cost);
 	CheckEquals(True, isEnhanced); //is enhanced
 
 	actualSaltBase64 := TBCrypt.BsdBase64Encode(actualSalt, Length(actualSalt));
