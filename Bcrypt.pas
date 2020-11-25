@@ -53,6 +53,15 @@ unit Bcrypt;
 	Version History
 	===============
 
+	Version 1.16     20201123
+			- Changed minimum key length from 1 to 0. The known test vectors allow an empty password.
+			  And if a person wants to have an empty password: that's their right.
+
+	Version 1.15     20201120
+			- Idera redefined the "fundamental" LongWord type to no longer be 32-bits. It is now 32-bits on 16-bit platforms, 32-bits on 32-bit platforms, and 64-bits on 64-bit platforms.
+				And Cardinal, the "generic" type, as been changed to be 16-bits on 16-bit platforms, 32-bits on 32-bit platforms, and 32-bits on 64-bit platforms.
+				This means they violated the contract of correctly written code - retroactively breaking all existing code.
+
 	Version 1.14     20190823
 			- Added function to manually prehash a password using SHA-2_256
 			- Added EnchancedHashPassword to prehash the password and output $bcrypt-sha256$ identifier
@@ -239,41 +248,44 @@ interface
 {$IFDEF CONDITIONALEXPRESSIONS}
 	{$IF CompilerVersion >= 22}
 		{$DEFINE COMPILER_15_UP} //Delphi XE
-	{$ENDIF}
+	{$IFEND}
 	{$IF CompilerVersion >= 15}
 		{$DEFINE COMPILER_7_UP} //Delphi 7
-	{$ENDIF}
+	{$IFEND}
 {$ENDIF}
 
 uses
-	SysUtils, Windows, Math,
+	SysUtils,
 	{$IFDEF COMPILER_7_UP}Types,{$ENDIF} //Types.pas didn't appear until ~Delphi 7.
-	ComObj;
+	ComObj, Math;
 
 type
 {$IFNDEF UNICODE}
 	UnicodeString = WideString; //System.UnicodeString wasn't added until Delphi 2009
 {$ENDIF}
 
-{$IFDEF VER150} //Delphi 7
-	TBytes = Types.TByteDynArray; //TByteDynArray wasn't added until around Delphi 7. Sometime later it moved to SysUtils.
-{$ENDIF}
-
-{$IFDEF VER130} //Delphi 5
-	TBytes = array of Byte; //for old-fashioned Delphi 5, we have to do it ourselves
+{$IFDEF COMPILER_15_UP}
+	//TBytes === System.TArray<System.Byte>
+{$ELSE}
+	{$IFDEF COMPILER_7_UP} //Delphi 7
+		TBytes = Types.TByteDynArray; //TByteDynArray wasn't added until around Delphi 7. Sometime later it moved to SysUtils.
+	{$ELSE}
+		TBytes = array of Byte; //for old-fashioned Delphi 5, we have to do it ourselves
+	{$ENDIF}
 {$ENDIF}
 
 {$IFNDEF COMPILER_15_UP}
 	//Someone said that Delphi 2010 (Delphi 14) didn't have UIntPtr.
 	//So maybe it was Delphi XE (Delphi 15)
 	UIntPtr = Cardinal; //an unsigned, pointer sized, integer
+	UInt32 = Cardinal; //Idera changed the unchangeable "fundamental" LongWord type from UInt32 to UInt64. So we use the "generic" type Cardinal - which hopefully will remain UInt32 going forward
 {$ENDIF}
 
 	TBlowfishData= record
 		InitBlock: array[0..7] of Byte;    { initial IV }
 		LastBlock: array[0..7] of Byte;    { current IV }
-		SBox: array[0..3, 0..255] of DWORD; //4 SBoxes
-		PBox: array[0..17] of DWORD; //18 subkeys
+		SBox: array[0..3, 0..255] of UInt32; //4 SBoxes
+		PBox: array[0..17] of UInt32; //18 subkeys
 	end;
 
 	TBCrypt = class(TObject)
@@ -306,7 +318,7 @@ type
 		class function SelfTestK: Boolean; //SASLprep rules for passwords
 		class function SelfTestL: Boolean; //Test prehashing a password (sha256 -> base64)
 
-		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
+		class function GenRandomBytes(len: Integer; const data: Pointer): HRESULT; //Ask the operating system for len random bytes
 
 		class function GetModernCost(SampleCost: Integer; SampleHashDurationMS: Real): Integer;
 		class function GetModernCost_Benchmark: Integer;
@@ -314,7 +326,7 @@ type
 		class function TimingSafeSameString(const Safe, User: string): Boolean;
 		class function PasswordRehashNeededCore(const Version: string; const Cost: Integer; SampleCost: Integer; SampleHashDurationMS: Real): Boolean;
 
-		class function HashBytes256(Data: TBytes): string;
+		class function HashBytes(Data: TBytes; HashAlgorithm: string): string;
 		class function Base64Encode(const data: array of Byte): string;
 	public
 		// Hashes a password into the OpenBSD password-file format (non-standard base-64 encoding). Also validate that BSD style string
@@ -364,6 +376,7 @@ implementation
 uses
 {$IFDEF Sqm}SqmApi,{$ENDIF}
 {$IFDEF BCryptUnitTests}TestFramework,{$ENDIF}
+	Windows,
 	ActiveX;
 
 const
@@ -446,7 +459,7 @@ const
 
 	SInvalidHashString = 'Invalid base64 hash string';
 	SBcryptCostRangeError = 'BCrypt cost factor must be between 4..31 (%d)';
-	SKeyRangeError = 'Key must be between 1 and 72 bytes long (%d)';
+	SKeyRangeError = 'Key must be between 0 and 72 bytes long (%d)';
 	SSaltLengthError = 'Salt must be 16 bytes';
 	SInvalidLength = 'Invalid length';
 
@@ -496,6 +509,35 @@ const
 		- this base64 string is then passed on to the underlying bcrypt algorithm as the new password to be hashed.
 }
 
+var
+	_freq: Int64 = 0;
+
+function GetPerformanceTimestamp: Int64;
+begin
+	if not QueryPerformanceCounter({var}Result) then
+		Result := 0;
+end;
+
+function GetPerformanceFrequency: Int64;
+begin
+	if _freq = 0 then
+	begin
+		if not QueryPerformanceFrequency({var}_freq) then
+			_freq := -1; //negative one, so that a division results in negative ticks, rather than infinite or exception
+	end;
+
+	Result := _freq;
+end;
+
+function PerformanceTimestampToMs(const Timestamp: Int64): Real;
+var
+	freq: Int64;
+begin
+	freq := GetPerformanceFrequency;
+
+	Result := Timestamp / freq;
+end;
+
 {$IFDEF BCryptUnitTests}
 type
 	TBCryptTests = class(TTestCase)
@@ -530,14 +572,7 @@ type
 	end;
 {$ENDIF}
 
-const
-	advapi32 = 'advapi32.dll';
-
-function CryptAcquireContextW(out phProv: THandle; pszContainer: PWideChar; pszProvider: PWideChar; dwProvType: DWORD; dwFlags: DWORD): BOOL; stdcall; external advapi32;
-function CryptReleaseContext(hProv: THandle; dwFlags: DWORD): BOOL; stdcall; external advapi32;
-function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; stdcall; external advapi32;
-
-procedure BurnString(var s: UnicodeString);
+procedure BurnString(var s: UnicodeString); overload;
 begin
 	if Length(s) > 0 then
 	begin
@@ -548,8 +583,52 @@ begin
 		}
 		UniqueString({var}s); //We can't FillChar the string if it's shared, or its in the constant data page
 		{$ENDIF}
-		FillChar(s[1], Length(s), 0);
+		FillChar(s[1], Length(s)*SizeOf(WideChar), 0);
 		s := '';
+	end;
+end;
+
+procedure BurnString(var s: AnsiString); overload;
+begin
+	{
+		If the string is actually constant (reference count of -1), then any attempt to burn it will be
+		an access violation; as the memory is sitting in a read-only data page.
+
+		But Delphi provides no supported way to get the reference count of a string.
+
+		It's also an issue if someone else is currently using the string (i.e. Reference Count > 1).
+		If the string were only referenced by the caller (with a reference count of 1), then
+		our function here, which received the string through a var reference would also have teh string with
+		a reference count of one.
+
+		Either way, we can only burn the string if there's no other reference.
+
+		The use of UniqueString, while counter-intuitiave, is the best approach.
+		If you pass an unencrypted password to BurnString as a var parameter, and there were another reference,
+		the string would still contain the password on exit. You can argue that what's the point of making a *copy*
+		of a string only to burn the copy. Two things:
+
+			- if you're debugging it, the string you passed will now be burned (i.e. your local variable will be empty)
+			- most of the time the RefCount will be 1. When RefCount is one, UniqueString does nothing, so we *are* burning
+				the only string
+	}
+	if Length(s) > 0 then
+	begin
+		{
+			By not calling UniqueString, we only save on a memory allocation and wipe if RefCnt <> 1
+			It's an unsafe micro-optimization because we're using undocumented offsets to reference counts.
+
+			And i'm really uncomfortable using it because it really is undocumented.
+			It is absolutely a given that it won't change. And we'd have stopped using Delphi long before
+			it changes. But i just can't do it.
+
+			//if PLongInt(PByte(S) - 8)^ = 1 then //RefCnt=1
+			//	ZeroMemory(Pointer(s), System.Length(s)*SizeOf(WideChar));
+		}
+		UniqueString({var}s); //ensure the passed in string has a reference count of one
+		FillChar(s[1], Length(s)*SizeOf(AnsiChar), 0);
+
+		s := ''; //We want the callee to see their passed string come back as empty (even if it was shared with other variables)
 	end;
 end;
 
@@ -619,6 +698,18 @@ begin
 	Result := FormatPasswordHashForBsd('2a', cost, salt, hash);
 end;
 
+function CoCreateGuid(out guid: TGUID): HResult; stdcall; external 'ole32.dll' name 'CoCreateGuid';
+
+function CreateGUID: TGUID;
+begin
+	//Creates a random (i.e. Type-4) UUID
+{$IFDEF COMPILER_7_UP}
+	OleCheck(SysUtils.CreateGuid({out}Result));
+{$ELSE}
+	OleCheck(CoCreateGuid({out}Result));
+{$ENDIF}
+end;
+
 class function TBCrypt.GenerateSalt: TBytes;
 var
 	type4Uuid: TGUID;
@@ -632,13 +723,15 @@ begin
 	begin
 		//Type 4 UUID (RFC 4122) is a handy source of (almost) 128-bits of random data (actually 120 bits)
 		//But the security doesn't come from the salt being secret, it comes from the salt being different each time
-		OleCheck(CoCreateGUID(Type4Uuid));
+		type4Uuid := CreateGuid;
 		Move(type4Uuid.D1, salt[0], BCRYPT_SALT_LEN); //16 bytes
 	end;
 
 	Result := salt;
 end;
 
+const
+	advapi32 = 'advapi32.dll';
 
 function CryptAcquireContext(out phProv: THandle; pszContainer: PWideChar; pszProvider: PWideChar; dwProvType: DWORD; dwFlags: DWORD): BOOL; stdcall; external advapi32 name 'CryptAcquireContextW';
 function CryptCreateHash(hProv: THandle; Algid: LongWord; hKey: THandle; dwFlags: DWORD; out hHash: THandle): BOOL; stdcall; external advapi32;
@@ -646,29 +739,64 @@ function CryptHashData(hHash: THandle; pbData: PByte; dwDataLen: DWORD; dwFlags:
 function CryptGetHashParam(hHash: THandle; dwParam: DWORD; pbData: PByte; var dwDataLen: DWORD; dwFlags: DWORD): BOOL; stdcall; external advapi32;
 function CryptDestroyHash(hHash: THandle): BOOL; stdcall; external advapi32;
 
+function CryptAcquireContextW(out phProv: THandle; pszContainer: PWideChar; pszProvider: PWideChar; dwProvType: DWORD; dwFlags: DWORD): BOOL; stdcall; external advapi32;
+function CryptReleaseContext(hProv: THandle; dwFlags: DWORD): BOOL; stdcall; external advapi32;
+function CryptGenRandom(hProv: THandle; dwLen: DWORD; pbBuffer: Pointer): BOOL; stdcall; external advapi32;
 
 
+{$IFNDEF COMPILER_7_UP}
+procedure RaiseLastOSError;
+begin
+	RaiseLastWin32Error;
+end;
+{$ENDIF}
 
-
-class function TBCrypt.HashBytes256(Data: TBytes): string;
+class function TBCrypt.HashBytes(Data: TBytes; HashAlgorithm: string): string;
 var
 	provider: THandle;
 	hash: THandle;
 	digestSize: Cardinal;
 	digest: TBytes;
+	hashAlgorithmID: Cardinal;
 const
 	PROV_RSA_AES			= 24; //Provider type; from WinCrypt.h
 	CRYPT_VERIFYCONTEXT	= $F0000000;
-	CALG_SHA_256			= $0000800c;
+
+	ALG_CLASS_HASH = $8000; // (4 << 13)
+	ALG_TYPE_ANY = 0;
+	ALG_SID_SHA_256 = 12;
+	ALG_SID_SHA_384 = 13;
+	ALG_SID_SHA_512 = 14;
+
+//	CALG_SHA_256 = $0000800c;
+	CALG_SHA_256 = (ALG_CLASS_HASH or ALG_TYPE_ANY or ALG_SID_SHA_256);
+	CALG_SHA_384 = (ALG_CLASS_HASH or ALG_TYPE_ANY or ALG_SID_SHA_384);
+	CALG_SHA_512 = (ALG_CLASS_HASH or ALG_TYPE_ANY or ALG_SID_SHA_512);
+
 	HP_HASHVAL				= $0002;
 	HP_HASHSIZE				= $0004;
 begin
+{
+	HashAlgorithm:
+		- 'SHA256'
+		- 'SHA384'
+		- 'SHA512'
+}
 	SetLength(Result, 0);
+
+	if HashAlgorithm = 'SHA256' then
+		hashAlgorithmID := CALG_SHA_256
+	else if HashAlgorithm = 'SHA384' then
+		hashAlgorithmID := CALG_SHA_384
+	else if HashAlgorithm = 'SHA512' then
+		hashAlgorithmID := CALG_SHA_512
+	else
+		raise EBCryptException.CreateFmt('Unknown hash algorithm: ''%s''', [HashAlgorithm]);
 
 	if not CryptAcquireContext({out}provider, nil, nil, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) then
 		RaiseLastOSError;
 	try
-		if not CryptCreateHash(provider, CALG_SHA_256, 0, 0, {out}hash) then
+		if not CryptCreateHash(provider, hashAlgorithmID, 0, 0, {out}hash) then
 			RaiseLastOSError;
 		try
 			//Hash the data
@@ -728,7 +856,7 @@ end;
 {$RANGECHECKS OFF}
 
 type
-	TSBox = array[0..255] of DWORD;
+	TSBox = array[0..255] of UInt32;
 	PSBox = ^TSBox;
 
 {
@@ -857,12 +985,12 @@ const
 
 		The amount of hex digits can be increased if you want to experiment with more rounds and longer key lengths.
 	}
-	PBox: array[0..17] of DWORD = (
+	PBox: array[0..17] of UInt32 = (
 				$243f6a88, $85a308d3, $13198a2e, $03707344, $a4093822, $299f31d0,
 				$082efa98, $ec4e6c89, $452821e6, $38d01377, $be5466cf, $34e90c6c,
 				$c0ac29b7, $c97c50dd, $3f84d5b5, $b5470917, $9216d5d9, $8979fb1b);
 
-	SBox0: array[0..255] of DWORD = (
+	SBox0: array[0..255] of UInt32 = (
 				$d1310ba6, $98dfb5ac, $2ffd72db, $d01adfb7, $b8e1afed, $6a267e96, $ba7c9045, $f12c7f99,
 				$24a19947, $b3916cf7, $0801f2e2, $858efc16, $636920d8, $71574e69, $a458fea3, $f4933d7e,
 				$0d95748f, $728eb658, $718bcd58, $82154aee, $7b54a41d, $c25a59b5, $9c30d539, $2af26013,
@@ -895,7 +1023,7 @@ const
 				$83260376, $6295cfa9, $11c81968, $4e734a41, $b3472dca, $7b14a94a, $1b510052, $9a532915,
 				$d60f573f, $bc9bc6e4, $2b60a476, $81e67400, $08ba6fb5, $571be91f, $f296ec6b, $2a0dd915,
 				$b6636521, $e7b9f9b6, $ff34052e, $c5855664, $53b02d5d, $a99f8fa1, $08ba4799, $6e85076a);
-	SBox1: array[0..255] of DWORD = (
+	SBox1: array[0..255] of UInt32 = (
 				$4b7a70e9, $b5b32944, $db75092e, $c4192623, $ad6ea6b0, $49a7df7d, $9cee60b8, $8fedb266,
 				$ecaa8c71, $699a17ff, $5664526c, $c2b19ee1, $193602a5, $75094c29, $a0591340, $e4183a3e,
 				$3f54989a, $5b429d65, $6b8fe4d6, $99f73fd6, $a1d29c07, $efe830f5, $4d2d38e6, $f0255dc1,
@@ -928,7 +1056,7 @@ const
 				$a6078084, $19f8509e, $e8efd855, $61d99735, $a969a7aa, $c50c06c2, $5a04abfc, $800bcadc,
 				$9e447a2e, $c3453484, $fdd56705, $0e1e9ec9, $db73dbd3, $105588cd, $675fda79, $e3674340,
 				$c5c43465, $713e38d8, $3d28f89e, $f16dff20, $153e21e7, $8fb03d4a, $e6e39f2b, $db83adf7);
-	SBox2: array[0..255] of DWORD = (
+	SBox2: array[0..255] of UInt32 = (
 				$e93d5a68, $948140f7, $f64c261c, $94692934, $411520f7, $7602d4f7, $bcf46b2e, $d4a20068,
 				$d4082471, $3320f46a, $43b7d4b7, $500061af, $1e39f62e, $97244546, $14214f74, $bf8b8840,
 				$4d95fc1d, $96b591af, $70f4ddd3, $66a02f45, $bfbc09ec, $03bd9785, $7fac6dd0, $31cb8504,
@@ -961,7 +1089,7 @@ const
 				$6f05e409, $4b7c0188, $39720a3d, $7c927c24, $86e3725f, $724d9db9, $1ac15bb4, $d39eb8fc,
 				$ed545578, $08fca5b5, $d83d7cd3, $4dad0fc4, $1e50ef5e, $b161e6f8, $a28514d9, $6c51133c,
 				$6fd5c7e7, $56e14ec4, $362abfce, $ddc6c837, $d79a3234, $92638212, $670efa8e, $406000e0);
-	SBox3: array[0..255] of DWORD = (
+	SBox3: array[0..255] of UInt32 = (
 				$3a39ce37, $d3faf5cf, $abc27737, $5ac52d1b, $5cb0679e, $4fa33742, $d3822740, $99bc9bbe,
 				$d5118e9d, $bf0f7315, $d62d1c7e, $c700c47b, $b78c1b6b, $21a19045, $b26eb1be, $6a366eb4,
 				$5748ab2f, $bc946e79, $c6a376d2, $6549c2c8, $530ff8ee, $468dde7d, $d5730a1d, $4cd04dc6,
@@ -1001,7 +1129,7 @@ begin
 
 	len := Length(Key);
 	if (Len > BCRYPT_MaxKeyLen) then //maximum of 72 bytes
-		raise EBCryptException.CreateFmt(SKeyRangeError, [Len]); //'Key must be between 1 and 72 bytes long (%d)'
+		raise EBCryptException.CreateFmt(SKeyRangeError, [Len]); //'Key must be between 0 and 72 bytes long (%d)'
 
 	if Length(Salt) <> BCRYPT_SALT_LEN then
 		raise EBCryptException.Create(SSaltLengthError); //'Salt must be 16 bytes'
@@ -1117,8 +1245,8 @@ begin
 
 	//ExpandKey phase of the Expensive key setup
 	keyLen := Length(key);
-	if (keyLen < 1) or (keyLen > BCRYPT_MaxKeyLen) then
-		raise EBCryptException.CreateFmt(SKeyRangeError, [keyLen]); //'Key must be between 1 and 72 bytes long (%d)'
+	if (keyLen > BCRYPT_MaxKeyLen) then
+		raise EBCryptException.CreateFmt(SKeyRangeError, [keyLen]); //'Key must be between 0 and 72 bytes long (%d)'
 
 	{
 		XOR all the subkeys in the P-array with the encryption key.
@@ -1129,18 +1257,21 @@ begin
 		The key is viewed as being cyclic; when the process reaches the end of the key,
 		it starts reusing bits from the beginning to XOR with subkeys.
 	}
-	keyB := PByteArray(@key[0]); //access to key-array without bounds checking
-	keyOffset := 0;
-	for i := 0 to 17 do
+	if keyLen > 0 then
 	begin
-		//Next the next 4-bytes of the key as a UInt32 - making sure to wrap around the end of the key array
-		A :=      (keyB[(keyOffset  )           ] shl 24);
-		A := A or (keyB[(keyOffset+1) mod keyLen] shl 16);
-		A := A or (keyB[(keyOffset+2) mod keyLen] shl  8);
-		A := A or (keyB[(keyOffset+3) mod keyLen]       );
-		keyOffset := (keyOffset+4) mod keyLen;
+		keyB := PByteArray(@key[0]); //access to key-array without bounds checking
+		keyOffset := 0;
+		for i := 0 to 17 do
+		begin
+			//Next the next 4-bytes of the key as a UInt32 - making sure to wrap around the end of the key array
+			A :=      (keyB[(keyOffset  )           ] shl 24);
+			A := A or (keyB[(keyOffset+1) mod keyLen] shl 16);
+			A := A or (keyB[(keyOffset+2) mod keyLen] shl  8);
+			A := A or (keyB[(keyOffset+3) mod keyLen]       );
+			keyOffset := (keyOffset+4) mod keyLen;
 
-		State.PBox[i] := State.PBox[i] xor A;
+			State.PBox[i] := State.PBox[i] xor A;
+		end;
 	end;
 
 	//Blowfish-encrypt the first 64 bits of the salt argument using the current state of the key schedule.
@@ -1212,15 +1343,10 @@ begin
 	Result := False;
 	PasswordRehashNeeded := False;
 
-	if not QueryPerformanceFrequency({var}freq) then
-		freq := -1; //avoid a division by zero
-
 	//Measure how long it takes to run the hash. If it's too quick, it's time to increase the cost
-	if not QueryPerformanceCounter(t1) then t1 := 0;
-
+	t1 := GetPerformanceTimestamp;
 	candidateHash := TBCrypt.HashPassword(password, salt, cost);
-
-	if not QueryPerformanceCounter(t2) then t2 := 0;
+	t2 := GetPerformanceTimestamp;
 
 	len := Length(hash);
 	if Length(candidateHash) <> len then
@@ -1229,13 +1355,14 @@ begin
 	Result := CompareMem(@candidateHash[0], @hash[0], len);
 
 	//Based on how long it took to hash the password, see if a rehash is needed to increase the cost
+	freq := GetPerformanceFrequency;
 	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
 end;
 
 {$IFNDEF UNICODE}
 function CharInSet(C: Char; const CharSet: TSysCharSet): Boolean;
 begin
-  Result := C in CharSet;
+	Result := C in CharSet;
 end;
 {$ENDIF}
 
@@ -1398,25 +1525,22 @@ var
 begin
 	PasswordRehashNeeded := False; //indicates if your hash needs upgrading in version or cost
 
-	if not QueryPerformanceFrequency({var}freq) then
-		freq := -1; //avoid a division by zero
-
 	if not TryParseHashString(expectedHashString, {out}version, {out}cost, {out}salt, {out}isEnhanced) then
 		raise Exception.Create(SInvalidHashString);
 
 	//Measure how long it takes to run the hash. If it's too quick, it's time to increase the cost
-	if not QueryPerformanceCounter(t1) then t1 := 0;
+	t1 := GetPerformanceTimestamp;
 
 	if isEnhanced then
 	begin
 		prehashedPassword := TBCrypt.Prehash256(password);
 		hash := TBCrypt.HashPassword(prehashedPassword, salt, cost);
-		BurnString(preHashedPassword);
+		BurnString({var}preHashedPassword);
 	end
 	else
 		hash := TBCrypt.HashPassword(password, salt, cost);
 
-	if not QueryPerformanceCounter(t2) then t2 := 0;
+	t2 := GetPerformanceTimestamp;
 
 	if isEnhanced then
 		actualHashString := FormatEnhancedPasswordHash(version, cost, salt, hash)
@@ -1427,6 +1551,7 @@ begin
 	Result := TBcrypt.TimingSafeSameString(actualHashString, expectedHashString);
 
 	//Based on how long it took to hash the password, see if a rehash is needed to increase the cost
+	freq := GetPerformanceFrequency;
 	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
 end;
 
@@ -1868,24 +1993,32 @@ var
 	end;
 
 begin
-	{
-	Enhanced mode pre-hashes the password with SHA2-256. This gives three benfits:
+{
+	Enhanced mode pre-hashes the password with SHA2-256. It converts the password into a SHA256 digest, e.g.:
 
-	- overcomes the 72-byte limit on passwords; allowing them to be arbitrary long
-	- avoids potential denial of service with really long passwords
+		- "correct horse battery staple"  ==> "C4BBCB1FBEC99D65BF59D85C8CB62EE2DB963F0FE106F483D9AFA73BD4E39A8A"
 
-	Another general benefit to pre-hashing passwords is that passwords all become
-	the same length. This means that you can avoid leaking information about
-	password length. This benefit does not apply to bcrypt though; but it is still
-	nice to know about and use.
+	This gives three benfits:
+
+		- overcomes the 72-byte limit on passwords; allowing them to be arbitrary long
+		- avoids potential denial of service with really long passwords
+
+	Another general benefit to pre-hashing passwords is that passwords all become the same length.
+	This means that you can avoid leaking information about password length.
+	This benefit does not apply to bcrypt though; but it is still nice to know about and use.
 
 		- Prep the password from a string into bytes
 		- Convert the bytes into a SHA-256 digest
 		- Base64 encode the digest
-	}
+
+	HashAlgorithm:
+		- "SHA384"  <--Default, does not suffer from length extension attacks. Default of bcrypt.net
+		- "SHA256"  <--Default of passlib; our old default.
+		- "SHA512"  <--DropBox, but generated a base64 has that is longer than 72 bytes
+}
 	key := TBCrypt.PasswordStringPrep(password);
 	try
-		Result := TBCrypt.HashBytes256(key);
+		Result := TBCrypt.HashBytes(key, 'SHA256');
 	finally
 		BurnArray(key);
 	end;
@@ -1978,7 +2111,9 @@ begin
 	Result := True;
 end;
 
-class function TBCrypt.GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
+
+{$IFDEF WIN32}
+function GenRandomBytes_Windows(len: Integer; const data: Pointer): HRESULT;
 var
 	hProv: THandle;
 const
@@ -1986,6 +2121,9 @@ const
 	CRYPT_VERIFYCONTEXT = DWORD($F0000000);
 	CRYPT_SILENT         = $00000040;
 begin
+	{
+		Get cryptographic random data from the operating system.
+	}
 	if not CryptAcquireContextW(hPRov, nil, nil, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT or CRYPT_SILENT) then
 	begin
 		Result := HResultFromWin32(GetLastError);
@@ -2002,6 +2140,17 @@ begin
 	end;
 
 	Result := S_OK;
+end;
+{$ENDIF}
+
+class function TBCrypt.GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
+begin
+{$IFDEF WIN32}
+	Result := GenRandomBytes_Windows(len, data);
+{$ELSE}
+//	Here is where you figure out how to call your OS's source of cryptographic random bytes.
+	Result := E_NOTIMPL;
+{$ENDIF}
 end;
 
 class function TBCrypt.GetModernCost(SampleCost: Integer; SampleHashDurationMS: Real): Integer;
@@ -2095,15 +2244,16 @@ begin
 	}
 	Result := BCRYPT_COST; //don't ever go less than the default cost
 
-	if not QueryPerformanceFrequency({var}freq) then Exit;
-	if (freq = 0) then Exit;
-	if not QueryPerformanceCounter(t1) then Exit;
-	if (t1 = 0) then Exit;
+	t1 := GetPerformanceTimestamp;
+	if (t1 <= 0) then Exit;
 
 	TBCrypt.HashPassword('Benchmark', testCost);
 
-	if not QueryPerformanceCounter(t2) then Exit;
-	if t2=0 then Exit;
+	t2 := GetPerformanceTimestamp;
+	if (t2 <= 0) then Exit;
+
+	freq := GetPerformanceFrequency;
+	if freq <= 0 then Exit;
 
 	Result := TBCrypt.GetModernCost(testCost, (t2-t1)/freq * 1000);
 end;
@@ -2435,7 +2585,7 @@ begin
 	data[6] := Ord('r');
 	data[7] := Ord('d');
 
-	actual := TBCrypt.HashBytes256(data);
+	actual := TBCrypt.HashBytes(data, 'SHA256');
 
 	Result := ('XohImNooBHFR0OVvjcYpJ3NgPQ1qq73WKhHvch0VQtg=' = actual);
 end;
@@ -2571,8 +2721,7 @@ begin
 		Exit;
 	end;
 
-	if not QueryPerformanceFrequency(freq) then
-		freq := -1; //to avoid division by zero
+	freq := GetPerformanceFrequency;
 
 	Status('Cost factor	Duration (ms)');
 
@@ -2581,9 +2730,9 @@ begin
 	OutputDebugString('SAMPLING ON');
 	while (cost <= 16{31}) do
 	begin
-		QueryPerformanceCounter({out}t1);
+		t1 := GetPerformanceTimestamp;
 		TBCrypt.HashPassword('benchmark', cost);
-		QueryPerformanceCounter({out}t2);
+		t2 := GetPerformanceTimestamp;
 
 		durationMS := (t2-t1)/freq * 1000;
 
@@ -2686,6 +2835,12 @@ end;
 
 procedure TBCryptTests.SelfTestD_VariableLengthPasswords;
 begin
+	if not FindCmdLineSwitch('SlowUnitTests', ['/', '-'], True) then
+	begin
+		Status('Very slow test. Specify -SlowUnitTests to include');
+		Exit;
+	end;
+
 	CheckTrue(TBCrypt.SelfTestD);
 end;
 
@@ -2698,13 +2853,11 @@ procedure TBCryptTests.SelfTestF_CorrectBattery;
 var
 	t1, t2, freq: Int64;
 begin
-	if not QueryPerformanceFrequency(freq) then
-		freq := -1; //to avoid division by zero
-
-	QueryPerformanceCounter(t1);
+	t1 := GetPerformanceTimestamp;
 	CheckTrue(TBcrypt.SelfTestF);
-	QueryPerformanceCounter(t2);
+	t2 := GetPerformanceTimestamp;
 
+	freq := GetPerformanceFrequency;
 	Status(Format('%.4f ms', [(t2-t1)/freq*1000]));
 
 	Status(GetCompilerOptions);
@@ -2756,9 +2909,9 @@ var
 		n := 5;
 		while n > 0 do
 		begin
-			QueryPerformanceCounter(t1);
+			t1 := GetPerformanceTimestamp;
 			TBCrypt.HashPassword('corrent horse battery staple', Cost);
-			QueryPerformanceCounter(t2);
+			t2 := GetPerformanceTimestamp;
 
 			Dec(n);
 
@@ -2773,8 +2926,7 @@ var
 		Status(Format('BCrypt, cost=%d: %.2f ms', [cost, bestTime]));
 	end;
 begin
-	if not QueryPerformanceFrequency(freq) then
-		freq := -1; //negative one, so that a division results in negative ticks, rather than infinite or exception
+	freq := GetPerformanceFrequency;
 
 	TimeIt(8);
 	TimeIt(9);
