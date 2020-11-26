@@ -22,7 +22,7 @@ unit Bcrypt;
 
 	Enhanced mode pre-hashes the password with SHA2-256. This gives two benfits:
 
-		- overcomes the 72-byte limit on passwords; allowing them to be arbitrary long
+		- overcomes the 72-byte limit on passwords; allowing them to be arbitrarily long
 		- avoids potential denial of service with really long passwords
 
 	It is essentially: HashPassword(base64(sha256(password)))
@@ -53,6 +53,9 @@ unit Bcrypt;
 	Version History
 	===============
 
+	Version 1.17     20201125
+			- Simplified the performance timestamp to just two functions, and removed the use of GetPerformanceFrequency.
+
 	Version 1.16     20201123
 			- Changed minimum key length from 1 to 0. The known test vectors allow an empty password.
 			  And if a person wants to have an empty password: that's their right.
@@ -61,6 +64,12 @@ unit Bcrypt;
 			- Idera redefined the "fundamental" LongWord type to no longer be 32-bits. It is now 32-bits on 16-bit platforms, 32-bits on 32-bit platforms, and 64-bits on 64-bit platforms.
 				And Cardinal, the "generic" type, as been changed to be 16-bits on 16-bit platforms, 32-bits on 32-bit platforms, and 32-bits on 64-bit platforms.
 				This means they violated the contract of correctly written code - retroactively breaking all existing code.
+			- Refactored a lot of the OS-specific code into separate functions.
+			  This way you can create your own IFDEFs to plug in your own OS-specific equivalents:
+					- GetPerformanceTimestamp ==> QueryPerformanceCounter (Windows)
+					- PerformanceTimestampToMs ==> Timestamp / QueryPerformanceFrequency (Windows)
+					- GenRandomBytes ==> Crypto API (Windows)
+					- HashBytes ==> Crypto API (Windows)
 
 	Version 1.14     20190823
 			- Added function to manually prehash a password using SHA-2_256
@@ -252,6 +261,8 @@ interface
 	{$IF CompilerVersion >= 15}
 		{$DEFINE COMPILER_7_UP} //Delphi 7
 	{$IFEND}
+{$ELSE}
+	{$DEFINE MSWINDOWS} //The MSWINDOWS define didn't work until Delphi 7
 {$ENDIF}
 
 uses
@@ -509,34 +520,54 @@ const
 		- this base64 string is then passed on to the underlying bcrypt algorithm as the new password to be hashed.
 }
 
-var
-	_freq: Int64 = 0;
-
 function GetPerformanceTimestamp: Int64;
 begin
+{$IFDEF MSWINDOWS}
 	if not QueryPerformanceCounter({var}Result) then
 		Result := 0;
+{$ELSE}
+	Result := 0;
+{$ENDIF}
 end;
 
-function GetPerformanceFrequency: Int64;
+{$IFDEF MSWINDOWS}
+var
+	_freq: Int64 = 0;
+{$ENDIF}
+
+function PerformanceTimestampToMs(const Timestamp: Int64): Real;
 begin
 	if _freq = 0 then
 	begin
+{$IFDEF MSWINDOWS}
 		if not QueryPerformanceFrequency({var}_freq) then
-			_freq := -1; //negative one, so that a division results in negative ticks, rather than infinite or exception
+			_freq := -1;
+{$ELSE}
+		_freq := -1;
+{$ENDIF}
 	end;
 
-	Result := _freq;
+	Result := Timestamp / _freq * 1000;
 end;
 
-function PerformanceTimestampToMs(const Timestamp: Int64): Real;
-var
-	freq: Int64;
+procedure DebugOutput(const AText: string);
 begin
-	freq := GetPerformanceFrequency;
+	{
+		This function is the generic "cross platform" version of OutputDebugString.
+		It is the same name as the Indy function in IdGlobal that exists for the same reason.
 
-	Result := Timestamp / freq;
+		In reality their version detects Kylix and DotNet, and does whatever those things have to have.
+
+		That's too much work for me.
+
+		I understand your pain, GeoffSmith82. But i need it to remain compatible with Delphi 5.
+		Yes, you heard me. Delphi 5.
+	}
+{$IFDEF MSWINDOWS}
+	OutputDebugString(PChar(AText));
+{$ENDIF}
 end;
+
 
 {$IFDEF BCryptUnitTests}
 type
@@ -1338,7 +1369,7 @@ class function TBCrypt.CheckPassword(const password: UnicodeString; const salt, 
 var
 	candidateHash: TBytes;
 	len: Integer;
-	freq, t1, t2: Int64;
+	t1, t2: Int64;
 begin
 	Result := False;
 	PasswordRehashNeeded := False;
@@ -1355,8 +1386,7 @@ begin
 	Result := CompareMem(@candidateHash[0], @hash[0], len);
 
 	//Based on how long it took to hash the password, see if a rehash is needed to increase the cost
-	freq := GetPerformanceFrequency;
-	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
+	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, PerformanceTimestampToMs(t2-t1));
 end;
 
 {$IFNDEF UNICODE}
@@ -1521,7 +1551,7 @@ var
 	hash: TBytes;
 	actualHashString: string;
 	prehashedPassword: string;
-	freq, t1, t2: Int64;
+	t1, t2: Int64;
 begin
 	PasswordRehashNeeded := False; //indicates if your hash needs upgrading in version or cost
 
@@ -1551,8 +1581,7 @@ begin
 	Result := TBcrypt.TimingSafeSameString(actualHashString, expectedHashString);
 
 	//Based on how long it took to hash the password, see if a rehash is needed to increase the cost
-	freq := GetPerformanceFrequency;
-	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, (t2-t1)/freq*1000);
+	PasswordRehashNeeded := TBcrypt.PasswordRehashNeededCore(version, cost, cost, PerformanceTimestampToMs(t2-t1));
 end;
 
 class function TBCrypt.BsdBase64Encode(const data: array of Byte; BytesToEncode: Integer): string;
@@ -2112,7 +2141,7 @@ begin
 end;
 
 
-{$IFDEF WIN32}
+{$IFDEF MSWINDOWS}
 function GenRandomBytes_Windows(len: Integer; const data: Pointer): HRESULT;
 var
 	hProv: THandle;
@@ -2145,7 +2174,7 @@ end;
 
 class function TBCrypt.GenRandomBytes(len: Integer; const data: Pointer): HRESULT;
 begin
-{$IFDEF WIN32}
+{$IFDEF MSWINDOWS}
 	Result := GenRandomBytes_Windows(len, data);
 {$ELSE}
 //	Here is where you figure out how to call your OS's source of cryptographic random bytes.
@@ -2230,7 +2259,7 @@ end;
 
 class function TBCrypt.GetModernCost_Benchmark: Integer;
 var
-	t1, t2, freq: Int64;
+	t1, t2: Int64;
 const
 	testCost = 5; //4;
 begin
@@ -2252,10 +2281,7 @@ begin
 	t2 := GetPerformanceTimestamp;
 	if (t2 <= 0) then Exit;
 
-	freq := GetPerformanceFrequency;
-	if freq <= 0 then Exit;
-
-	Result := TBCrypt.GetModernCost(testCost, (t2-t1)/freq * 1000);
+	Result := TBCrypt.GetModernCost(testCost, PerformanceTimestampToMs(t2-t1));
 end;
 
 class function TBCrypt.SelfTestD: Boolean;
@@ -2296,9 +2322,9 @@ begin
 	{
 		Validate a known password hash
 	}
-	//OutputDebugString('SAMPLING ON');
+	//DebugOutput('SAMPLING ON');
 	Result := TBCrypt.CheckPassword('correctbatteryhorsestapler', '$2a$12$mACnM5lzNigHMaf7O1py1O3vlf6.BA8k8x3IoJ.Tq3IB/2e7g61Km', {out}rehashNeeded);
-	//OutputDebugString('SAMPLING OFF');
+	//DebugOutput('SAMPLING OFF');
 end;
 
 class function TBCrypt.SelfTestG: Boolean;
@@ -2712,7 +2738,7 @@ end;
 procedure TBCryptTests.Benchmark;
 var
 	cost: Integer;
-	t1, t2, freq: Int64;
+	t1, t2: Int64;
 	durationMS: Double;
 begin
 	if not FindCmdLineSwitch('SlowUnitTests', ['/', '-'], True) then
@@ -2721,20 +2747,18 @@ begin
 		Exit;
 	end;
 
-	freq := GetPerformanceFrequency;
-
 	Status('Cost factor	Duration (ms)');
 
 	cost := 4; //the minimum supported bcrypt cost
 
-	OutputDebugString('SAMPLING ON');
+	DebugOutput('SAMPLING ON');
 	while (cost <= 16{31}) do
 	begin
 		t1 := GetPerformanceTimestamp;
 		TBCrypt.HashPassword('benchmark', cost);
 		t2 := GetPerformanceTimestamp;
 
-		durationMS := (t2-t1)/freq * 1000;
+		durationMS := PerformanceTimestampToMs(t2-t1);
 
 		Status(Format('%d	%.4f', [cost, durationMS]));
 
@@ -2743,7 +2767,7 @@ begin
 		if durationMS > 15000 then
 			Break;
 	end;
-	OutputDebugString('SAMPLING OFF');
+	DebugOutput('SAMPLING OFF');
 
 	Status(Self.GetCompilerOptions);
 end;
@@ -2851,14 +2875,13 @@ end;
 
 procedure TBCryptTests.SelfTestF_CorrectBattery;
 var
-	t1, t2, freq: Int64;
+	t1, t2: Int64;
 begin
 	t1 := GetPerformanceTimestamp;
 	CheckTrue(TBcrypt.SelfTestF);
 	t2 := GetPerformanceTimestamp;
 
-	freq := GetPerformanceFrequency;
-	Status(Format('%.4f ms', [(t2-t1)/freq*1000]));
+	Status(Format('%.4f ms', [PerformanceTimestampToMs(t2-t1)]));
 
 	Status(GetCompilerOptions);
 end;
@@ -2894,8 +2917,6 @@ begin
 end;
 
 procedure TBCryptTests.SpeedTests;
-var
-	freq: Int64;
 
 	procedure TimeIt(Cost: Integer);
 	var
@@ -2915,7 +2936,7 @@ var
 
 			Dec(n);
 
-			timems := (t2-t1)/freq*1000; //milliseconds
+			timems := PerformanceTimestampToMs(t2-t1); //milliseconds
 			if (bestTime = 0) or (timems < bestTime) then
 			begin
 				bestTime := timems;
@@ -2926,8 +2947,6 @@ var
 		Status(Format('BCrypt, cost=%d: %.2f ms', [cost, bestTime]));
 	end;
 begin
-	freq := GetPerformanceFrequency;
-
 	TimeIt(8);
 	TimeIt(9);
 	TimeIt(10);
@@ -2936,9 +2955,9 @@ begin
 	TimeIt(13);
 	TimeIt(14);
 	TimeIt(15);
-//OutputDebugString('SAMPLING ON');
+//DebugOutput('SAMPLING ON');
 	TimeIt(16);
-//OutputDebugString('SAMPLING OFF');
+//DebugOutput('SAMPLING OFF');
 //	TimeIt(17);
 end;
 
